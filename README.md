@@ -1,7 +1,7 @@
-# Narfex Pseudo Oracle
+# MasterChef
 
-An oracle that looks to Pancakeswap contracts for token prices instead of external sources.
-This cannot be called a real oracle, because the interaction takes place inside the blockchain.
+Farming contract for minted Narfex Token.
+Distributes a reward from the balance instead of minting it.
 
 ## Install Dependencies
 
