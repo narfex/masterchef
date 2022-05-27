@@ -356,13 +356,13 @@ contract MasterChef is Ownable, ReentrancyGuard {
     
     /// @notice Sets the commission interval
     /// @param interval Interval size in seconds
-    function setCommissionInteval(uint interval) public onlyOwner {
+    function setCommissionInterval(uint interval) public onlyOwner {
         commissionInterval = interval;
     }
 
     /// @notice Sets the harvest interval
     /// @param interval Interval size in seconds
-    function setHarvestInteval(uint interval) public onlyOwner {
+    function setHarvestInterval(uint interval) public onlyOwner {
         harvestInterval = interval;
     }
 
