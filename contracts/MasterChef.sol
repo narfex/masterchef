@@ -292,9 +292,12 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @return true if user can harvest
     function getIsUserCanHarvest(address pair) public view returns (bool) {
         UserPool storage user = pools[pair].users[address(msg.sender)];
-        return user.harvestTimestamp + harvestInterval < block.timestamp
-            // Or reward clearing feature is turned on
-            || (isUnrewardEarlyWithdrawals && user.depositTimestamp + rewardCancelInterval < block.timestamp);
+        return isUnrewardEarlyWithdrawals
+            // Is reward clearing feature is turned on
+            ? user.depositTimestamp + rewardCancelInterval < block.timestamp
+                && user.harvestTimestamp + harvestInterval < block.timestamp
+            // Use only harvest interval
+            : user.harvestTimestamp + harvestInterval < block.timestamp;
     }
 
     /// @notice Whether to charge the user an early withdrawal fee
