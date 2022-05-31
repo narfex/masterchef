@@ -49,11 +49,15 @@ contract MasterChef is Ownable, ReentrancyGuard {
     bool public isUnrewardEarlyWithdrawals = false;
     // Interval after deposit in which all rewards will be canceled
     uint public rewardCancelInterval = 14 days;
+    // Referral percent for reward
+    uint public referralPercent = 5;
 
     // Pools data
     mapping (address => Pool) public pools;
     // Pools list by addresses
     address[] public poolsList;
+    // Address of the agents who invited the users (refer => agent)
+    mapping (address => address) refers;
 
     event CreatePool(address indexed pair, uint rewardPerBlock, uint poolIndex);
     event Deposit(address indexed caller, address indexed pair, uint amount, uint indexed block, uint poolSize);
@@ -69,7 +73,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint _harvestInterval,
         uint _earlyHarvestCommission,
         bool _isUnrewardEarlyWithdrawals,
-        uint _rewardCancelInterval
+        uint _rewardCancelInterval,
+        uint _referralPercent
     ) public {
         rewardToken = IBEP20(narfexTokenAddress);
         if (_rewardPerBlock > 0) defaultRewardPerBlock = _rewardPerBlock;
@@ -78,6 +83,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         if (_earlyHarvestCommission > 0) earlyHarvestCommission = _earlyHarvestCommission;
         isUnrewardEarlyWithdrawals = _isUnrewardEarlyWithdrawals;
         if (_rewardCancelInterval > 0) rewardCancelInterval = _rewardCancelInterval;
+        if (_referralPercent > 0) referralPercent = _referralPercent;
     }
 
     /// @notice Returns the soil fertility
@@ -111,11 +117,17 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @notice Deposit LP tokens to the farm. It will try to harvest first
     /// @param pair The address of LP token
     /// @param amount Amount of LP tokens to deposit
-    function deposit(address pair, uint amount) public nonReentrant {
+    /// @param referAgent Address of the agent who invited the user
+    function deposit(address pair, uint amount, address referAgent) public nonReentrant {
         Pool storage pool = pools[pair];
         require(amount > 0, "Amount must be above zero");
         require(pool.isExists, "Pool is not exists");
         require(pool.token.balanceOf(address(msg.sender)) >= amount, "Not enough LP balance");
+
+        // Set user agent
+        if (address(referAgent) != address(0)) {
+            setUserReferAgent(referAgent);
+        }
 
         console.log("Try to deposit. Sender", msg.sender, pool.token.balanceOf(address(msg.sender)));
         // Try to harvest before deposit
@@ -333,6 +345,13 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
             user.harvestTimestamp = block.timestamp;
             user.lastHarvestBlock = block.number;
+
+            // Send a referral reward to the agent
+            address agent = refers[address(msg.sender)];
+            if (address(agent) != address(0)) {
+                rewardToken.safeTransfer(agent, getReferralReward(reward)); 
+            }
+
             return reward;
         } else {
             // Store the reward and update the last harvest block
@@ -410,13 +429,15 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @return uintEarlyHarvestCommission
     /// @return boolIsUnrewardEarlyWithdrawals
     /// @return uintRewardCancelInterval
+    /// @return uintReferralPercent
     function getSettings() public view returns (
         uint uintDefaultRewardPerBlock,
         uint uintCommissionInterval,
         uint uintHarvestInterval,
         uint uintEarlyHarvestCommission,
         bool boolIsUnrewardEarlyWithdrawals,
-        uint uintRewardCancelInterval
+        uint uintRewardCancelInterval,
+        uint uintReferralPercent
         ) {
         return (
         defaultRewardPerBlock,
@@ -424,13 +445,39 @@ contract MasterChef is Ownable, ReentrancyGuard {
         harvestInterval,
         earlyHarvestCommission,
         isUnrewardEarlyWithdrawals,
-        rewardCancelInterval
+        rewardCancelInterval,
+        referralPercent
         );
     }
 
     /// @notice Returnt all allowed pools addresses
     function getPoolsList() public view returns (address[] memory) {
         return poolsList;
+    }
+
+    /// @notice Sets the user's agent
+    /// @param agent Address of the agent who invited the user
+    /// @return False if the agent and the user have the same address
+    function setUserReferAgent(address agent) public returns (bool) {
+        if (address(msg.sender) != agent) {
+            refers[address(msg.sender)] = agent;
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    /// @notice Owner can set the referral percent
+    /// @param percent Referral percent
+    function setReferralPercent(uint percent) public onlyOwner {
+        referralPercent = percent;
+    }
+
+    /// @notice Returns agent's reward amount for referral's reward
+    /// @param reward Referral's reward amount
+    /// @return Agent's reward amount
+    function getReferralReward(uint reward) internal view returns (uint) {
+        return SafeMath.mul(reward, referralPercent).div(100);
     }
 
 }
