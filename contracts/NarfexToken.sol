@@ -62,7 +62,7 @@ contract NarfexToken is BEP20 {
     /**
      * @notice Constructs the NarfexToken contract.
      */
-    constructor() public BEP20("Narfex Token", "Narfex") {
+    constructor() BEP20("Narfex Token", "Narfex") {
         _operator = _msgSender();
         emit OperatorTransferred(address(0), _operator);
 
@@ -87,10 +87,10 @@ contract NarfexToken is BEP20 {
         } else {
             
             // default burn tax is 2% by default of every transfer
-            uint256 burnAmount = amount.mul(burnRateTax).div(10000);
+            uint256 burnAmount = amount * burnRateTax / 10000;
 
             // default 98% of transfer sent to recipient
-            uint256 sendAmount = amount.sub(burnAmount);
+            uint256 sendAmount = amount - burnAmount;
             
             require(amount == sendAmount + burnAmount, "Narfex::transfer: Burn value invalid");
 
@@ -107,7 +107,7 @@ contract NarfexToken is BEP20 {
      * @dev Returns the max transfer amount.
      */
     function maxTransferAmount() public view returns (uint256) {
-        return totalSupply().mul(maxTransferAmountRate).div(10000);
+        return totalSupply() * maxTransferAmountRate / 10000;
     }
 
     /**
@@ -283,7 +283,7 @@ contract NarfexToken is BEP20 {
         address signatory = ecrecover(digest, v, r, s);
         require(signatory != address(0), "Narfex::delegateBySig: invalid signature");
         require(nonce == nonces[signatory]++, "Narfex::delegateBySig: invalid nonce");
-        require(now <= expiry, "Narfex::delegateBySig: signature expired");
+        require(block.timestamp <= expiry, "Narfex::delegateBySig: signature expired");
         return _delegate(signatory, delegatee);
     }
 
@@ -364,7 +364,7 @@ contract NarfexToken is BEP20 {
                 // decrease old representative
                 uint32 srcRepNum = numCheckpoints[srcRep];
                 uint256 srcRepOld = srcRepNum > 0 ? checkpoints[srcRep][srcRepNum - 1].votes : 0;
-                uint256 srcRepNew = srcRepOld.sub(amount);
+                uint256 srcRepNew = srcRepOld - amount;
                 _writeCheckpoint(srcRep, srcRepNum, srcRepOld, srcRepNew);
             }
 
@@ -372,7 +372,7 @@ contract NarfexToken is BEP20 {
                 // increase new representative
                 uint32 dstRepNum = numCheckpoints[dstRep];
                 uint256 dstRepOld = dstRepNum > 0 ? checkpoints[dstRep][dstRepNum - 1].votes : 0;
-                uint256 dstRepNew = dstRepOld.add(amount);
+                uint256 dstRepNew = dstRepOld + amount;
                 _writeCheckpoint(dstRep, dstRepNum, dstRepOld, dstRepNew);
             }
         }
@@ -403,7 +403,7 @@ contract NarfexToken is BEP20 {
         return uint32(n);
     }
 
-    function getChainId() internal pure returns (uint) {
+    function getChainId() internal view returns (uint) {
         uint256 chainId;
         assembly { chainId := chainid() }
         return chainId;

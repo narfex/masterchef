@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity 0.6.12;
+pragma solidity >=0.6.12 <0.9.0;
 
 import "./ReentrancyGuard.sol";
 import "./Ownable.sol";
 import "./SafeBEP20.sol";
-import "./SafeMath.sol";
 import "./BEP20.sol";
 import "hardhat/console.sol";
 
@@ -13,7 +12,6 @@ import "hardhat/console.sol";
 /// @author Danil Sakhinov
 /// @notice Distributes a reward from the balance instead of minting it
 contract MasterChef is Ownable, ReentrancyGuard {
-    using SafeMath for uint256;
     using SafeBEP20 for IBEP20;
 
     // User share of a pool
@@ -75,7 +73,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         bool _isUnrewardEarlyWithdrawals,
         uint _rewardCancelInterval,
         uint _referralPercent
-    ) public {
+    ) {
         rewardToken = IBEP20(narfexTokenAddress);
         if (_rewardPerBlock > 0) defaultRewardPerBlock = _rewardPerBlock;
         if (_commissionInterval > 0) commissionInterval = _commissionInterval;
@@ -102,12 +100,11 @@ contract MasterChef is Ownable, ReentrancyGuard {
             rewardPerBlock = defaultRewardPerBlock;
         }
         uint[] memory blocks;
-        pools[pair] = Pool({
-            token: IBEP20(pair),
-            blocks: blocks,
-            rewardPerBlock: rewardPerBlock,
-            isExists: true
-        });
+        Pool storage newPool = pools[pair];
+        newPool.token = IBEP20(pair);
+        newPool.blocks = blocks;
+        newPool.rewardPerBlock = rewardPerBlock;
+        newPool.isExists = true;
         poolsList.push(pair);
         uint poolIndex = poolsList.length - 1;
         emit CreatePool(pair, rewardPerBlock, poolIndex);
@@ -160,7 +157,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         // Update user start harvest block
         UserPool storage user = pool.users[address(msg.sender)];
         console.log("Update user", user.amount);
-        user.amount = user.amount == 0 ? amount : SafeMath.add(user.amount, amount);
+        user.amount = user.amount == 0 ? amount : user.amount + amount;
         user.startBlockIndex = blockIndex;
         console.log("User updated", user.amount, user.startBlockIndex);
         user.depositTimestamp = block.timestamp;
@@ -190,14 +187,14 @@ contract MasterChef is Ownable, ReentrancyGuard {
         pool.token.safeTransfer(address(msg.sender), amount);
 
         // Update pool size
-        pool.sizes[block.number] = SafeMath.sub(getPoolSize(pair), amount);
+        pool.sizes[block.number] = getPoolSize(pair) - amount;
         // Update last changes block
         if (block.number != _getPoolLastBlock(pair)) {
             pool.blocks.push(block.number);
         }
 
         // Update user pool
-        user.amount = SafeMath.sub(user.amount, amount);
+        user.amount = user.amount - amount;
         user.startBlockIndex = pool.blocks.length;
         user.harvestTimestamp = block.timestamp;
 
@@ -246,7 +243,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @param value Number in wei
     /// @return value in percents
     function getHundreds(uint value) internal pure returns (uint) {
-        return SafeMath.mul(value, 100).div(10**18);
+        return value * 100 / 10**18;
     }
 
     /// @notice Calculates the user's reward based on a blocks range
@@ -277,22 +274,21 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
             // Blocks range between pool size key points
             uint range = user.lastHarvestBlock + 1 > pool.blocks[i]
-                ? SafeMath.sub(endBlock, user.lastHarvestBlock + 1) // Last harvest could happen inside the range
-                : SafeMath.sub(endBlock, pool.blocks[i]); // Use startBlock as the start of the range
+                ? endBlock - user.lastHarvestBlock + 1 // Last harvest could happen inside the range
+                : endBlock - pool.blocks[i]; // Use startBlock as the start of the range
             console.log("Blocks range", range);
 
             // Pool size can't be empty on the range, because we use harvest before each withdraw
             require (pool.sizes[pool.blocks[i]] > 0, "[getUserReward] Bug: unexpected empty pool on some blocks range");
 
             // User share in this range in %
-            uint share = SafeMath.mul(userPoolSize, 10**decimals)
-                .div(pool.sizes[pool.blocks[i]]); // Divide the pool size
+            uint share = userPoolSize * 10**decimals / pool.sizes[pool.blocks[i]];
             console.log("Share %", getHundreds(share));
             // Reward from this range
-            uint rangeReward = SafeMath.mul(share, pool.rewardPerBlock).mul(range).div(10**decimals);
+            uint rangeReward = share * pool.rewardPerBlock * range / 10**decimals;
             console.log("Range reward", getHundreds(rangeReward));
             // Add reward to total
-            reward = SafeMath.add(reward, rangeReward);
+            reward += rangeReward;
         }
 
         console.log("Total reward", getHundreds(reward));
@@ -332,10 +328,10 @@ contract MasterChef is Ownable, ReentrancyGuard {
         if (getIsUserCanHarvest(pair)) {
             // Calculate commission for early withdraw
             uint commission = getIsEarlyHarvest(pair)
-                ? SafeMath.mul(reward, earlyHarvestCommission).div(100)
+                ? reward * earlyHarvestCommission / 100
                 : 0;
             if (commission > 0) {
-                reward = SafeMath.sub(reward, commission);
+                reward -= commission;
             }
             console.log("User harvest: reward and commission", reward, commission);
 
@@ -477,7 +473,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @param reward Referral's reward amount
     /// @return Agent's reward amount
     function getReferralReward(uint reward) internal view returns (uint) {
-        return SafeMath.mul(reward, referralPercent).div(100);
+        return reward * referralPercent / 100;
     }
 
 }
