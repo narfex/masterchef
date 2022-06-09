@@ -6,7 +6,6 @@ import "./ReentrancyGuard.sol";
 import "./Ownable.sol";
 import "./SafeBEP20.sol";
 import "./BEP20.sol";
-import "hardhat/console.sol";
 
 /// @title Farming contract for minted Narfex Token
 /// @author Danil Sakhinov
@@ -135,24 +134,19 @@ contract MasterChef is Ownable, ReentrancyGuard {
             setUserReferAgent(referAgent);
         }
 
-        console.log("Try to deposit. Sender", msg.sender, pool.token.balanceOf(address(msg.sender)));
         // Try to harvest before deposit
         harvest(pair);
         // TODO: Do I need to make pool.token.approve there is with web3 calls?
         // Main transfer operation
         pool.token.safeTransferFrom(address(msg.sender), address(this), amount);
-        console.log("Transferred", amount);
 
         uint blockIndex = 0;
         if (pool.blocks.length == 0) {
-            console.log("No blocks");
             // It it's the first deposit, just add the block
             pool.sizes[block.number] = amount;
             // Add block to known blocks
             pool.blocks.push(block.number);
-            console.log("Block pushed", block.number);
         } else {
-            console.log("Blocks", pool.blocks.length);
             // Update last pool size
             pool.sizes[block.number] = getPoolSize(pair) + amount;
             // Add block to known blocks
@@ -160,15 +154,12 @@ contract MasterChef is Ownable, ReentrancyGuard {
                 pool.blocks.push(block.number);
             }
             blockIndex = pool.blocks.length - 1;
-            console.log("New block index", blockIndex, block.number);
         }
 
         // Update user start harvest block
         UserPool storage user = pool.users[address(msg.sender)];
-        console.log("Update user", user.amount);
         user.amount = user.amount == 0 ? amount : user.amount + amount;
         user.startBlockIndex = blockIndex;
-        console.log("User updated", user.amount, user.startBlockIndex);
         user.depositTimestamp = block.timestamp;
         user.harvestTimestamp = block.timestamp;
 
@@ -267,43 +258,34 @@ contract MasterChef is Ownable, ReentrancyGuard {
         UserPool storage user = pool.users[userAddress];
 
         uint reward = user.storedReward;
-        console.log("Stored reward", reward);
         uint userPoolSize = getUserPoolSize(pair, userAddress);
         if (userPoolSize == 0) return 0;
 
         uint decimals = pool.token.decimals();
 
         for (uint i = user.startBlockIndex; i < pool.blocks.length; i++) {
-            console.log("Loop index", i);
             // End of the pool size period
             uint endBlock = i + 1 < pool.blocks.length
                 ? pool.blocks[i + 1] // Next block in the array
                 : block.number; // Current block number
             if (user.lastHarvestBlock + 1 > endBlock) continue;
-            console.log("Blocks key points", pool.blocks[i], endBlock);
-            console.log("New harvest start", user.lastHarvestBlock + 1);
-            console.log("CurrentBlock", block.number);
 
             // Blocks range between pool size key points
             uint range = user.lastHarvestBlock + 1 > pool.blocks[i]
                 ? endBlock - user.lastHarvestBlock + 1 // Last harvest could happen inside the range
                 : endBlock - pool.blocks[i]; // Use startBlock as the start of the range
-            console.log("Blocks range", range);
 
             // Pool size can't be empty on the range, because we use harvest before each withdraw
             require (pool.sizes[pool.blocks[i]] > 0, "[getUserReward] Bug: unexpected empty pool on some blocks range");
 
             // User share in this range in %
             uint share = userPoolSize * 10**decimals / pool.sizes[pool.blocks[i]];
-            console.log("Share %", getHundreds(share));
             // Reward from this range
             uint rangeReward = share * pool.rewardPerBlock * range / 10**decimals;
-            console.log("Range reward", getHundreds(rangeReward));
             // Add reward to total
             reward += rangeReward;
         }
 
-        console.log("Total reward", getHundreds(reward));
         return reward;
     }
 
@@ -347,7 +329,6 @@ contract MasterChef is Ownable, ReentrancyGuard {
             if (commission > 0) {
                 reward -= commission;
             }
-            console.log("User harvest: reward and commission", reward, commission);
 
             // User can harvest only after harvest inverval
             rewardToken.safeTransfer(address(msg.sender), reward);
@@ -366,7 +347,6 @@ contract MasterChef is Ownable, ReentrancyGuard {
         } else {
             // Store the reward and update the last harvest block
             user.storedReward = reward;
-            console.log("User can't harvest yet", user.storedReward);
             user.lastHarvestBlock = block.number;
             return 0;
         }
