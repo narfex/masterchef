@@ -90,6 +90,15 @@ contract MasterChef is Ownable, ReentrancyGuard {
         return rewardToken.balanceOf(address(this));
     }
 
+    /// @notice Withdraw amount of reward token to the owner
+    /// @param _amount Amount of reward tokens. Can be set to 0 to withdraw all reward tokens
+    function withdrawNarfex(uint _amount) public onlyOwner {
+        uint amount = _amount > 0
+            ? _amount
+            : getNarfexLeft();
+        rewardToken.transfer(address(msg.sender), amount);
+    }
+
     /// @notice Creates a liquidity pool in the farm
     /// @param pair The address of LP token
     /// @param _rewardPerBlock Reward for each block. Set to 0 to use the default value
@@ -174,11 +183,11 @@ contract MasterChef is Ownable, ReentrancyGuard {
         UserPool storage user = pool.users[address(msg.sender)];
         require(amount > 0, "Amount must be above zero");
         require(pool.isExists, "Pool is not exists");
-        require(getUserPoolSize(pair) >= amount, "Not enough LP balance");
+        require(getUserPoolSize(pair, address(msg.sender)) >= amount, "Not enough LP balance");
 
         if (isUnrewardEarlyWithdrawals && user.depositTimestamp + rewardCancelInterval < block.timestamp) {
             // Clear user reward for early withdraw if this feature is turned on
-            _clearUserReward(pair);
+            _clearUserReward(pair, address(msg.sender));
         } else {
             // Try to harvest before withdraw
             harvest(pair);
@@ -222,11 +231,12 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     /// @notice Returns user's amount of LP tokens
     /// @param pair The address of LP token
+    /// @param userAddress The user address
     /// @return user's pool size
-    function getUserPoolSize(address pair) public view returns (uint) {
+    function getUserPoolSize(address pair, address userAddress) public view returns (uint) {
         Pool storage pool = pools[pair];
         if (pool.isExists && pool.blocks.length > 0) {
-            return pool.users[address(msg.sender)].amount;
+            return pool.users[userAddress].amount;
         } else {
             return 0;
         }
@@ -234,9 +244,10 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     /// @notice The number of the last block during which the harvest took place
     /// @param pair The address of LP token
+    /// @param userAddress The user address
     /// @return block number
-    function getUserLastHarvestBlock(address pair) public view returns (uint) {
-        return pools[pair].users[address(msg.sender)].lastHarvestBlock;
+    function getUserLastHarvestBlock(address pair, address userAddress) public view returns (uint) {
+        return pools[pair].users[userAddress].lastHarvestBlock;
     }
 
     /// @notice Returns wei number in 2-decimals (as %) for better console logging
@@ -249,14 +260,15 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @notice Calculates the user's reward based on a blocks range
     /// @notice Taking into account the changing size of the pool during this time
     /// @param pair The address of LP token
+    /// @param userAddress The user address
     /// @return reward size
-    function getUserReward(address pair) public view returns (uint) {
+    function getUserReward(address pair, address userAddress) public view returns (uint) {
         Pool storage pool = pools[pair];
-        UserPool storage user = pool.users[address(msg.sender)];
+        UserPool storage user = pool.users[userAddress];
 
         uint reward = user.storedReward;
         console.log("Stored reward", reward);
-        uint userPoolSize = getUserPoolSize(pair);
+        uint userPoolSize = getUserPoolSize(pair, userAddress);
         if (userPoolSize == 0) return 0;
 
         uint decimals = pool.token.decimals();
@@ -297,9 +309,10 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     /// @notice If enough time has passed since the last harvest
     /// @param pair The address of LP token
+    /// @param userAddress The user address
     /// @return true if user can harvest
-    function getIsUserCanHarvest(address pair) public view returns (bool) {
-        UserPool storage user = pools[pair].users[address(msg.sender)];
+    function getIsUserCanHarvest(address pair, address userAddress) public view returns (bool) {
+        UserPool storage user = pools[pair].users[userAddress];
         return isUnrewardEarlyWithdrawals
             // Is reward clearing feature is turned on
             ? user.depositTimestamp + rewardCancelInterval < block.timestamp
@@ -310,9 +323,10 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     /// @notice Whether to charge the user an early withdrawal fee
     /// @param pair The address of LP token
+    /// @param userAddress The user address
     /// @return true if it's to early to withdraw
-    function getIsEarlyHarvest(address pair) public view returns (bool) {
-        return pools[pair].users[address(msg.sender)].depositTimestamp + commissionInterval > block.timestamp;
+    function getIsEarlyHarvest(address pair, address userAddress) public view returns (bool) {
+        return pools[pair].users[userAddress].depositTimestamp + commissionInterval > block.timestamp;
     }
 
     /// @notice Try to harvest reward from the pool.
@@ -322,12 +336,12 @@ contract MasterChef is Ownable, ReentrancyGuard {
     function harvest(address pair) public returns (uint) {
         UserPool storage user = pools[pair].users[address(msg.sender)];
 
-        uint reward = getUserReward(pair);
+        uint reward = getUserReward(pair, address(msg.sender));
         if (reward == 0) return 0;
 
-        if (getIsUserCanHarvest(pair)) {
+        if (getIsUserCanHarvest(pair, address(msg.sender))) {
             // Calculate commission for early withdraw
-            uint commission = getIsEarlyHarvest(pair)
+            uint commission = getIsEarlyHarvest(pair, address(msg.sender))
                 ? reward * earlyHarvestCommission / 100
                 : 0;
             if (commission > 0) {
@@ -360,8 +374,9 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     /// @notice Clears user's reward in the pool
     /// @param pair The address of LP token
-    function _clearUserReward(address pair) internal {
-        UserPool storage user = pools[pair].users[address(msg.sender)];
+    /// @param userAddress The user address
+    function _clearUserReward(address pair, address userAddress) internal {
+        UserPool storage user = pools[pair].users[userAddress];
         user.storedReward = 0;
         user.harvestTimestamp = block.timestamp;
         user.lastHarvestBlock = _getPoolLastBlock(pair);

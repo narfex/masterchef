@@ -25,7 +25,8 @@
   "scripts": {
     "compile": "npx hardhat compile",
     "deployLocal": "npx hardhat run scripts/deploy.jsx --network localhost",
-    "deployBSC": "npx hardhat run scripts/deploy.jsx --network bsc"
+    "deployBSC": "npx hardhat run scripts/deploy.jsx --network bsc",
+    "deployTest": "npx hardhat run scripts/deployTest.jsx --network test"
   },
   "license": "GPL-3.0-or-later"
 }

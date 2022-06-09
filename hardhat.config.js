@@ -11,7 +11,13 @@ const networks = {
         chainId: 56,
         gasPrice: 20000000000,
         accounts: [accounts.bsc.privateKey]
-    }
+    },
+	test: {
+		url: "https://data-seed-prebsc-1-s1.binance.org:8545",
+		chainId: 97,
+		gasPrice: 20000000000,
+        accounts: [accounts.bsc.privateKey]
+	}
 };
 
 module.exports = {

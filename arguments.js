@@ -1,9 +1,10 @@
 module.exports = [
-	"0x3764Be118a1e09257851A3BD636D48DFeab5CAFE", // Narfex Token
+	"0xcDA8eD22bB27Fe84615f368D09B5A8Afe4a99320", // Narfex Token
 	0, // defaultRewardPerBlock
-	0, // commissionInterval
-	0, // harvestInterval
+	60 * 20, // commissionInterval
+	60 * 5, // harvestInterval
 	0, // earlyHarvestCommission
 	false, // isUnrewardEarlyWithdrawals
 	0, // rewardCancelInterval
+  0,
 ];
