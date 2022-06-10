@@ -53,6 +53,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
     mapping (address => Pool) public pools;
     // Pools list by addresses
     address[] public poolsList;
+    // Pools count
+    uint public poolsCount;
     // Address of the agents who invited the users (refer => agent)
     mapping (address => address) refers;
 
@@ -114,7 +116,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
         newPool.rewardPerBlock = rewardPerBlock;
         newPool.isExists = true;
         poolsList.push(pair);
-        uint poolIndex = poolsList.length - 1;
+        poolsCount = poolsList.length;
+        uint poolIndex = poolsCount - 1;
         emit CreatePool(pair, rewardPerBlock, poolIndex);
         return poolIndex;
     }
@@ -441,11 +444,6 @@ contract MasterChef is Ownable, ReentrancyGuard {
         );
     }
 
-    /// @notice Returnt all allowed pools addresses
-    function getPoolsList() public view returns (address[] memory) {
-        return poolsList;
-    }
-
     /// @notice Sets the user's agent
     /// @param agent Address of the agent who invited the user
     /// @return False if the agent and the user have the same address
@@ -469,6 +467,13 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @return Agent's reward amount
     function getReferralReward(uint reward) internal view returns (uint) {
         return reward * referralPercent / 100;
+    }
+
+    /// @notice Sets a pool reward
+    /// @param pair The address of LP token
+    /// @param reward Amount of reward per block
+    function setPoolRewardPerBlock(address pair, uint reward) public onlyOwner {
+        pools[pair].rewardPerBlock = reward;
     }
 
 }
