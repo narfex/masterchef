@@ -476,4 +476,11 @@ contract MasterChef is Ownable, ReentrancyGuard {
         pools[pair].rewardPerBlock = reward;
     }
 
+    /// @notice Returns reward per block for selected pair
+    /// @param pair The address of LP token
+    /// @return Reward per block
+    function getPoolRewardPerBlock(address pair) public view returns (uint) {
+        return pools[pair].rewardPerBlock;
+    }
+
 }
