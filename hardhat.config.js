@@ -13,7 +13,8 @@ const networks = {
         accounts: [accounts.bsc.privateKey]
     },
 	test: {
-		url: "https://data-seed-prebsc-1-s1.binance.org:8545",
+		url: "https://bsc-testnet.web3api.com/v1/KBR2FY9IJ2IXESQMQ45X76BNWDAW2TT3Z3",
+    //url: "https://data-seed-prebsc-1-s1.binance.org:8545",
 		chainId: 97,
 		gasPrice: 20000000000,
         accounts: [accounts.bsc.privateKey]

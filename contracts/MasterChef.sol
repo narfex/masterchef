@@ -6,6 +6,7 @@ import "./ReentrancyGuard.sol";
 import "./Ownable.sol";
 import "./SafeBEP20.sol";
 import "./BEP20.sol";
+import "./IPancakePair.sol";
 
 /// @title Farming contract for minted Narfex Token
 /// @author Danil Sakhinov
@@ -481,6 +482,60 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @return Reward per block
     function getPoolRewardPerBlock(address pair) public view returns (uint) {
         return pools[pair].rewardPerBlock;
+    }
+
+    /// @notice Returns pool data in one request
+    /// @param pair The address of LP token
+    /// @return token0 First token address
+    /// @return token1 Second token address
+    /// @return token0symbol First token symbol
+    /// @return token1symbol Second token symbol
+    /// @return size Liquidity pool size
+    /// @return rewardPerBlock Amount of reward token per block
+    function getPoolData(address pair) public view returns (
+        address token0,
+        address token1,
+        string memory token0symbol,
+        string memory token1symbol,
+        uint size,
+        uint rewardPerBlock
+    ) {
+        Pool storage pool = pools[pair];
+        IPancakePair pairToken = IPancakePair(pair);
+        BEP20 _token0 = BEP20(pairToken.token0());
+        BEP20 _token1 = BEP20(pairToken.token1());
+
+        return (
+            pairToken.token0(),
+            pairToken.token1(),
+            _token0.symbol(),
+            _token1.symbol(),
+            getPoolSize(pair),
+            pool.rewardPerBlock
+        );
+    }
+
+    /// @notice Returns pool data in one request
+    /// @param pair The address of LP token
+    /// @param userAddress The user address
+    /// @return balance User balance of LP token
+    /// @return userPool User liquidity pool size in the current pool
+    /// @return reward Current user reward in the current pool
+    /// @return isCanHarvest Is it time to harvest the reward
+    function getPoolUserData(address pair, address userAddress) public view returns (
+        uint balance,
+        uint userPool,
+        uint reward,
+        bool isCanHarvest
+    ) {
+        IPancakePair pairToken = IPancakePair(pair);
+
+        return (
+            pairToken.balanceOf(userAddress),
+            getUserPoolSize(pair, userAddress),
+            getUserReward(pair, userAddress),
+            getIsUserCanHarvest(pair, userAddress)
+        );
     }
 
 }
