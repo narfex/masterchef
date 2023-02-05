@@ -154,42 +154,6 @@ contract MasterChef is Ownable {
         return user.amount * accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
     }
 
-    function checkUserReward(address _pairAddress, address _user) public view returns (
-        uint _poolAddRewPerShare,
-        uint _lpSup,
-        uint _blocks,
-        uint _rewardPerBlock,
-        uint _poolAlloc,
-        uint _totalAlloc,
-        uint _cakeReward,
-        uint _accRewardPerShare,
-        uint _userAmount,
-        uint _result
-    ) {
-        uint256 _pid = poolId[_pairAddress];
-        PoolInfo storage pool = poolInfo[_pid];
-        UserInfo storage user = userInfo[_pid][_user];
-        uint256 accRewardPerShare = pool.accRewardPerShare;
-        uint256 lpSupply = pool.pairToken.balanceOf(address(this));
-        if (block.number > pool.lastRewardBlock && lpSupply != 0) {
-            uint256 blocks = block.number - pool.lastRewardBlock;
-            uint256 cakeReward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
-            accRewardPerShare += cakeReward * 1e12 / lpSupply;
-        }
-        return (
-            pool.accRewardPerShare,
-            lpSupply,
-            block.number - pool.lastRewardBlock,
-            rewardPerBlock,
-            pool.allocPoint,
-            totalAllocPoint,
-            (block.number - pool.lastRewardBlock) * rewardPerBlock * pool.allocPoint / totalAllocPoint,
-            accRewardPerShare,
-            user.amount,
-            user.amount * accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward
-        );
-    }
-
     /// @notice If enough time has passed since the last harvest
     /// @param _pairAddress The address of LP token
     /// @param _user The user address
