@@ -28,5 +28,8 @@
     "deployBSC": "npx hardhat run scripts/deploy.jsx --network bsc",
     "deployTest": "npx hardhat run scripts/deployTest.jsx --network test"
   },
-  "license": "GPL-3.0-or-later"
+  "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "@openzeppelin/contracts": "^4.8.1"
+  }
 }

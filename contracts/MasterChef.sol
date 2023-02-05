@@ -1,89 +1,92 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity >=0.6.12 <0.9.0;
+pragma solidity ^0.8.17;
 
-import "./ReentrancyGuard.sol";
-import "./Ownable.sol";
-import "./SafeBEP20.sol";
-import "./BEP20.sol";
-import "./IPancakePair.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+interface IERC20 {
+    function symbol() external view returns (string memory);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+}
+
+interface IPancakePair {
+    function balanceOf(address owner) external view returns (uint);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+}
 
 /// @title Farming contract for minted Narfex Token
 /// @author Danil Sakhinov
 /// @notice Distributes a reward from the balance instead of minting it
-contract MasterChef is Ownable, ReentrancyGuard {
-    using SafeBEP20 for IBEP20;
+contract MasterChef is Ownable {
 
     // User share of a pool
-    struct UserPool {
-        uint256 amount; // Amount of LP tokens
-        uint startBlockIndex; // Block index when farming started
-        uint lastHarvestBlock; // Block number of last harvest
-        uint storedReward; // Harvested reward delayed until the transaction is unlocked
-        uint depositTimestamp; // Timestamp of deposit
-        uint harvestTimestamp; // Timestamp of last harvest
+    struct UserInfo {
+        uint amount; // Amount of LP-tokens deposit
+        uint withdrawnReward; // Reward already withdrawn
+        uint depositTimestamp; // Last deposit time
+        uint harvestTimestamp; // Last harvest time
+        uint storedReward; // Reward tokens accumulated in contract
     }
 
-    struct Pool {
-        IBEP20 token; // LP token
-        mapping (address => UserPool) users; // Holder share info
-        uint[] blocks; // Blocks during which the size of the pool has changed
-        mapping (uint => uint) sizes; // Pool sizes during each block
-        uint rewardPerBlock; // Reward for each block in this pool
-        bool isExists; // Is pool allowed by owner
+    struct PoolInfo {
+        IERC20 pairToken; // Address of LP token contract
+        uint256 allocPoint; // How many allocation points assigned to this pool
+        uint256 lastRewardBlock;  // Last block number that NRFX distribution occurs.
+        uint256 accRewardPerShare; // Accumulated NRFX per share, times 1e12
     }
 
     // Reward to harvest
-    IBEP20 public rewardToken;
-    // Default reward size for new pools
-    uint public defaultRewardPerBlock = 1 * 10**18; // 1 wei
+    IERC20 public rewardToken;
     // The interval from the deposit in which the commission for the reward will be taken.
     uint public commissionInterval = 14 days;
     // Interval since last harvest when next harvest is not possible
     uint public harvestInterval = 8 hours;
-    // Commission for to early harvests in % (50 is 50%) based on commissionInterval
-    uint public earlyHarvestCommission = 10;
-    // Whether to cancel the reward for early withdrawal
-    bool public isUnrewardEarlyWithdrawals = false;
-    // Interval after deposit in which all rewards will be canceled
-    uint public rewardCancelInterval = 14 days;
-    // Referral percent for reward
-    uint public referralPercent = 5;
+    // Commission for to early harvests with 2 digits of presition (10000 = 100%)
+    uint public earlyHarvestCommission = 1000;
+    // Referral percent for reward with 2 digits of precision (10000 = 100%)
+    uint public referralPercent = 60;
+    // Amount of NRFX per block for all pools
+    uint256 public rewardPerBlock;
+    uint constant HUNDRED_PERCENTS = 10000;
 
-    // Pools data
-    mapping (address => Pool) public pools;
-    // Pools list by addresses
-    address[] public poolsList;
-    // Pools count
-    uint public poolsCount;
-    // Address of the agents who invited the users (refer => agent)
-    mapping (address => address) refers;
+    // Info of each pool.
+    PoolInfo[] public poolInfo;
+    // Info of each user that stakes LP tokens.
+    mapping (uint256 => mapping (address => UserInfo)) public userInfo;
+    // Mapping of pools IDs for pair addresses
+    mapping (address => uint256) public poolId;
+    // Mapping of users referrals
+    mapping (address => address) private referrals;
+    // Total allocation points. Must be the sum of all allocation points in all pools.
+    uint256 public totalAllocPoint = 0;
+    // The block number when farming starts
+    uint256 public startBlock;
 
-    event CreatePool(address indexed pair, uint rewardPerBlock, uint poolIndex);
-    event Deposit(address indexed caller, address indexed pair, uint amount, uint indexed block, uint poolSize);
-    event Withdraw(address indexed caller, address indexed pair, uint amount, uint indexed block, uint poolSize);
-    event Harvest(address indexed caller, address indexed pair, uint indexed block, uint reward, uint commission);
-    event ClearReward(address indexed caller, address indexed pair, uint indexed block);
+    event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
+    event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event Harvest(address indexed user, uint256 indexed pid, uint256 amount);
+    event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
 
-    /// @notice All uint values can be set to 0 to use the default values
     constructor(
-        address narfexTokenAddress,
-        uint _rewardPerBlock,
-        uint _commissionInterval,
-        uint _harvestInterval,
-        uint _earlyHarvestCommission,
-        bool _isUnrewardEarlyWithdrawals,
-        uint _rewardCancelInterval,
-        uint _referralPercent
+        address _rewardToken,
+        uint256 _rewardPerBlock
     ) {
-        rewardToken = IBEP20(narfexTokenAddress);
-        if (_rewardPerBlock > 0) defaultRewardPerBlock = _rewardPerBlock;
-        if (_commissionInterval > 0) commissionInterval = _commissionInterval;
-        if (_harvestInterval > 0) harvestInterval = _harvestInterval;
-        if (_earlyHarvestCommission > 0) earlyHarvestCommission = _earlyHarvestCommission;
-        isUnrewardEarlyWithdrawals = _isUnrewardEarlyWithdrawals;
-        if (_rewardCancelInterval > 0) rewardCancelInterval = _rewardCancelInterval;
-        if (_referralPercent > 0) referralPercent = _referralPercent;
+        rewardToken = IERC20(_rewardToken);
+        rewardPerBlock = _rewardPerBlock;
+        startBlock = block.timestamp;
+    }
+
+    /// @notice Count of created pools
+    /// @return poolInfo length
+    function getPoolsCount() external view returns (uint256) {
+        return poolInfo.length;
     }
 
     /// @notice Returns the soil fertility
@@ -101,273 +104,197 @@ contract MasterChef is Ownable, ReentrancyGuard {
         rewardToken.transfer(address(msg.sender), amount);
     }
 
-    /// @notice Creates a liquidity pool in the farm
-    /// @param pair The address of LP token
-    /// @param _rewardPerBlock Reward for each block. Set to 0 to use the default value
-    /// @return The pool index in the list
-    function createPool(address pair, uint _rewardPerBlock) public onlyOwner returns (uint) {
-        uint rewardPerBlock = _rewardPerBlock;
-        if (_rewardPerBlock == 0) {
-            rewardPerBlock = defaultRewardPerBlock;
+    /// @notice Add a new pool
+    /// @param _allocPoint Allocation point for this pool
+    /// @param _pairToken Address of LP token contract
+    /// @param _withUpdate Force update all pools
+    function add(uint256 _allocPoint, address _pairToken, bool _withUpdate) public onlyOwner {
+        if (_withUpdate) {
+            massUpdatePools();
         }
-        uint[] memory blocks;
-        Pool storage newPool = pools[pair];
-        newPool.token = IBEP20(pair);
-        newPool.blocks = blocks;
-        newPool.rewardPerBlock = rewardPerBlock;
-        newPool.isExists = true;
-        poolsList.push(pair);
-        poolsCount = poolsList.length;
-        uint poolIndex = poolsCount - 1;
-        emit CreatePool(pair, rewardPerBlock, poolIndex);
-        return poolIndex;
+        uint256 lastRewardBlock = block.number > startBlock ? block.number : startBlock;
+        totalAllocPoint = totalAllocPoint + _allocPoint;
+        poolInfo.push(PoolInfo({
+            pairToken: IERC20(_pairToken),
+            allocPoint: _allocPoint,
+            lastRewardBlock: lastRewardBlock,
+            accRewardPerShare: 0
+        }));
+        poolId[_pairToken] = poolInfo.length - 1;
     }
 
-    /// @notice Deposit LP tokens to the farm. It will try to harvest first
-    /// @param pair The address of LP token
-    /// @param amount Amount of LP tokens to deposit
-    /// @param referAgent Address of the agent who invited the user
-    function deposit(address pair, uint amount, address referAgent) public nonReentrant {
-        Pool storage pool = pools[pair];
-        require(amount > 0, "Amount must be above zero");
-        require(pool.isExists, "Pool is not exists");
-        require(pool.token.balanceOf(address(msg.sender)) >= amount, "Not enough LP balance");
-
-        // Set user agent
-        if (address(referAgent) != address(0)) {
-            setUserReferAgent(referAgent);
+    /// @notice Update allocation points for a pool
+    /// @param _pid Pool index
+    /// @param _allocPoint Allocation points
+    /// @param _withUpdate Force update all pools
+    function set(uint256 _pid, uint256 _allocPoint, bool _withUpdate) public onlyOwner {
+        if (_withUpdate) {
+            massUpdatePools();
         }
-
-        // Try to harvest before deposit
-        harvest(pair);
-        // TODO: Do I need to make pool.token.approve there is with web3 calls?
-        // Main transfer operation
-        pool.token.safeTransferFrom(address(msg.sender), address(this), amount);
-
-        uint blockIndex = 0;
-        if (pool.blocks.length == 0) {
-            // It it's the first deposit, just add the block
-            pool.sizes[block.number] = amount;
-            // Add block to known blocks
-            pool.blocks.push(block.number);
-        } else {
-            // Update last pool size
-            pool.sizes[block.number] = getPoolSize(pair) + amount;
-            // Add block to known blocks
-            if (_getPoolLastBlock(pair) != block.number) {
-                pool.blocks.push(block.number);
-            }
-            blockIndex = pool.blocks.length - 1;
-        }
-
-        // Update user start harvest block
-        UserPool storage user = pool.users[address(msg.sender)];
-        user.amount = user.amount == 0 ? amount : user.amount + amount;
-        user.startBlockIndex = blockIndex;
-        user.depositTimestamp = block.timestamp;
-        user.harvestTimestamp = block.timestamp;
-
-        emit Deposit(address(msg.sender), pair, amount, block.number, pool.sizes[block.number]);
-    }
-
-    /// @notice Withdraw LP tokens from the farm. It will try to harvest first
-    /// @param pair The address of LP token
-    /// @param amount Amount of LP tokens to withdraw
-    function withdraw(address pair, uint amount) public nonReentrant {
-        Pool storage pool = pools[pair];
-        UserPool storage user = pool.users[address(msg.sender)];
-        require(amount > 0, "Amount must be above zero");
-        require(pool.isExists, "Pool is not exists");
-        require(getUserPoolSize(pair, address(msg.sender)) >= amount, "Not enough LP balance");
-
-        if (isUnrewardEarlyWithdrawals && user.depositTimestamp + rewardCancelInterval < block.timestamp) {
-            // Clear user reward for early withdraw if this feature is turned on
-            _clearUserReward(pair, address(msg.sender));
-        } else {
-            // Try to harvest before withdraw
-            harvest(pair);
-        }
-        // Main transfer operation
-        pool.token.safeTransfer(address(msg.sender), amount);
-
-        // Update pool size
-        pool.sizes[block.number] = getPoolSize(pair) - amount;
-        // Update last changes block
-        if (block.number != _getPoolLastBlock(pair)) {
-            pool.blocks.push(block.number);
-        }
-
-        // Update user pool
-        user.amount = user.amount - amount;
-        user.startBlockIndex = pool.blocks.length;
-        user.harvestTimestamp = block.timestamp;
-
-        emit Withdraw(address(msg.sender), pair, amount, block.number, pool.sizes[block.number]);
-    }
-
-    /// @notice Returns the last block number in which the pool size was changed
-    /// @param pair The address of LP token
-    /// @return block number
-    function _getPoolLastBlock(address pair) internal view returns (uint) {
-        Pool storage pool = pools[pair];
-        return pool.blocks[pool.blocks.length - 1];
-    }
-
-    /// @notice Returns the pool size after the last pool changes
-    /// @param pair The address of LP token
-    /// @return pool size
-    function getPoolSize(address pair) public view returns (uint) {
-        if (pools[pair].isExists && pools[pair].blocks.length > 0) {
-            return pools[pair].sizes[_getPoolLastBlock(pair)];
-        } else {
-            return 0;
-        }
-    }
-
-    /// @notice Returns user's amount of LP tokens
-    /// @param pair The address of LP token
-    /// @param userAddress The user address
-    /// @return user's pool size
-    function getUserPoolSize(address pair, address userAddress) public view returns (uint) {
-        Pool storage pool = pools[pair];
-        if (pool.isExists && pool.blocks.length > 0) {
-            return pool.users[userAddress].amount;
-        } else {
-            return 0;
-        }
-    }
-
-    /// @notice The number of the last block during which the harvest took place
-    /// @param pair The address of LP token
-    /// @param userAddress The user address
-    /// @return block number
-    function getUserLastHarvestBlock(address pair, address userAddress) public view returns (uint) {
-        return pools[pair].users[userAddress].lastHarvestBlock;
-    }
-
-    /// @notice Returns wei number in 2-decimals (as %) for better console logging
-    /// @param value Number in wei
-    /// @return value in percents
-    function getHundreds(uint value) internal pure returns (uint) {
-        return value * 100 / 10**18;
+        totalAllocPoint = totalAllocPoint - poolInfo[_pid].allocPoint + _allocPoint;
+        poolInfo[_pid].allocPoint = _allocPoint;
     }
 
     /// @notice Calculates the user's reward based on a blocks range
-    /// @notice Taking into account the changing size of the pool during this time
-    /// @param pair The address of LP token
-    /// @param userAddress The user address
+    /// @param _pairAddress The address of LP token
+    /// @param _user The user address
     /// @return reward size
-    function getUserReward(address pair, address userAddress) public view returns (uint) {
-        Pool storage pool = pools[pair];
-        UserPool storage user = pool.users[userAddress];
-
-        uint reward = user.storedReward;
-        uint userPoolSize = getUserPoolSize(pair, userAddress);
-        if (userPoolSize == 0) return 0;
-
-        uint decimals = pool.token.decimals();
-
-        for (uint i = user.startBlockIndex; i < pool.blocks.length; i++) {
-            // End of the pool size period
-            uint endBlock = i + 1 < pool.blocks.length
-                ? pool.blocks[i + 1] // Next block in the array
-                : block.number; // Current block number
-            if (user.lastHarvestBlock + 1 > endBlock) continue;
-
-            // Blocks range between pool size key points
-            uint range = user.lastHarvestBlock + 1 > pool.blocks[i]
-                ? endBlock - user.lastHarvestBlock + 1 // Last harvest could happen inside the range
-                : endBlock - pool.blocks[i]; // Use startBlock as the start of the range
-
-            // Pool size can't be empty on the range, because we use harvest before each withdraw
-            require (pool.sizes[pool.blocks[i]] > 0, "[getUserReward] Bug: unexpected empty pool on some blocks range");
-
-            // User share in this range in %
-            uint share = userPoolSize * 10**decimals / pool.sizes[pool.blocks[i]];
-            // Reward from this range
-            uint rangeReward = share * pool.rewardPerBlock * range / 10**decimals;
-            // Add reward to total
-            reward += rangeReward;
+    /// @dev Only for frontend view
+    function getUserReward(address _pairAddress, address _user) public view returns (uint256) {
+        uint256 _pid = poolId[_pairAddress];
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][_user];
+        uint256 accRewardPerShare = pool.accRewardPerShare;
+        uint256 lpSupply = pool.pairToken.balanceOf(address(this));
+        if (block.number > pool.lastRewardBlock && lpSupply != 0) {
+            uint256 blocks = block.number - pool.lastRewardBlock;
+            uint256 cakeReward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
+            accRewardPerShare += cakeReward * 1e12 / lpSupply;
         }
+        return user.amount * accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
+    }
 
-        return reward;
+    function checkUserReward(address _pairAddress, address _user) public view returns (
+        uint _poolAddRewPerShare,
+        uint _lpSup,
+        uint _blocks,
+        uint _rewardPerBlock,
+        uint _poolAlloc,
+        uint _totalAlloc,
+        uint _cakeReward,
+        uint _accRewardPerShare,
+        uint _userAmount,
+        uint _result
+    ) {
+        uint256 _pid = poolId[_pairAddress];
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][_user];
+        uint256 accRewardPerShare = pool.accRewardPerShare;
+        uint256 lpSupply = pool.pairToken.balanceOf(address(this));
+        if (block.number > pool.lastRewardBlock && lpSupply != 0) {
+            uint256 blocks = block.number - pool.lastRewardBlock;
+            uint256 cakeReward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
+            accRewardPerShare += cakeReward * 1e12 / lpSupply;
+        }
+        return (
+            pool.accRewardPerShare,
+            lpSupply,
+            block.number - pool.lastRewardBlock,
+            rewardPerBlock,
+            pool.allocPoint,
+            totalAllocPoint,
+            (block.number - pool.lastRewardBlock) * rewardPerBlock * pool.allocPoint / totalAllocPoint,
+            accRewardPerShare,
+            user.amount,
+            user.amount * accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward
+        );
     }
 
     /// @notice If enough time has passed since the last harvest
-    /// @param pair The address of LP token
-    /// @param userAddress The user address
+    /// @param _pairAddress The address of LP token
+    /// @param _user The user address
     /// @return true if user can harvest
-    function getIsUserCanHarvest(address pair, address userAddress) public view returns (bool) {
-        UserPool storage user = pools[pair].users[userAddress];
-        return isUnrewardEarlyWithdrawals
-            // Is reward clearing feature is turned on
-            ? user.depositTimestamp + rewardCancelInterval < block.timestamp
-                && user.harvestTimestamp + harvestInterval < block.timestamp
-            // Use only harvest interval
-            : user.harvestTimestamp + harvestInterval < block.timestamp;
+    function getIsUserCanHarvest(address _pairAddress, address _user) internal view returns (bool) {
+        uint256 _pid = poolId[_pairAddress];
+        UserInfo storage user = userInfo[_pid][_user];
+        bool isEarlyHarvest = block.timestamp - user.harvestTimestamp < harvestInterval;
+        return !isEarlyHarvest;
     }
 
-    /// @notice Whether to charge the user an early withdrawal fee
-    /// @param pair The address of LP token
-    /// @param userAddress The user address
-    /// @return true if it's to early to withdraw
-    function getIsEarlyHarvest(address pair, address userAddress) public view returns (bool) {
-        return pools[pair].users[userAddress].depositTimestamp + commissionInterval > block.timestamp;
+    /// @notice If enough time has passed since the last deposit
+    /// @param _pairAddress The address of LP token
+    /// @param _user The user address
+    /// @return true if user can withdraw without loosing some reward
+    function getIsEarlyWithdraw(address _pairAddress, address _user) internal view returns (bool) {
+        uint256 _pid = poolId[_pairAddress];
+        UserInfo storage user = userInfo[_pid][_user];
+        bool isEarlyWithdraw = block.timestamp - user.depositTimestamp < commissionInterval;
+        return !isEarlyWithdraw;
     }
 
-    /// @notice Try to harvest reward from the pool.
-    /// @notice Will send a reward to the user if enough time has passed since the last harvest
-    /// @param pair The address of LP token
-    /// @return transferred reward amount
-    function harvest(address pair) public returns (uint) {
-        UserPool storage user = pools[pair].users[address(msg.sender)];
-
-        uint reward = getUserReward(pair, address(msg.sender));
-        if (reward == 0) return 0;
-
-        if (getIsUserCanHarvest(pair, address(msg.sender))) {
-            // Calculate commission for early withdraw
-            uint commission = getIsEarlyHarvest(pair, address(msg.sender))
-                ? reward * earlyHarvestCommission / 100
-                : 0;
-            if (commission > 0) {
-                reward -= commission;
-            }
-
-            // User can harvest only after harvest inverval
-            rewardToken.safeTransfer(address(msg.sender), reward);
-            emit Harvest(address(msg.sender), pair, block.number, reward, commission);
-
-            user.harvestTimestamp = block.timestamp;
-            user.lastHarvestBlock = block.number;
-
-            // Send a referral reward to the agent
-            address agent = refers[address(msg.sender)];
-            if (address(agent) != address(0)) {
-                rewardToken.safeTransfer(agent, getReferralReward(reward)); 
-            }
-
-            return reward;
-        } else {
-            // Store the reward and update the last harvest block
-            user.storedReward = reward;
-            user.lastHarvestBlock = block.number;
-            return 0;
-        }
+    /// @notice Returns user's amount of LP tokens
+    /// @param _pairAddress The address of LP token
+    /// @param _user The user address
+    /// @return user's pool size
+    function getUserPoolSize(address _pairAddress, address _user) public view returns (uint) {
+        uint256 _pid = poolId[_pairAddress];
+        return userInfo[_pid][_user].amount;
     }
 
-    /// @notice Clears user's reward in the pool
-    /// @param pair The address of LP token
-    /// @param userAddress The user address
-    function _clearUserReward(address pair, address userAddress) internal {
-        UserPool storage user = pools[pair].users[userAddress];
-        user.storedReward = 0;
-        user.harvestTimestamp = block.timestamp;
-        user.lastHarvestBlock = _getPoolLastBlock(pair);
-        user.startBlockIndex = pools[pair].blocks[pools[pair].blocks.length - 1];
-        emit ClearReward(address(msg.sender), pair, block.number);
+    /// @notice Returns contract settings by one request
+    /// @return uintRewardPerBlock
+    /// @return uintCommissionInterval
+    /// @return uintHarvestInterval
+    /// @return uintEarlyHarvestCommission
+    /// @return uintReferralPercent
+    function getSettings() public view returns (
+        uint uintRewardPerBlock,
+        uint uintCommissionInterval,
+        uint uintHarvestInterval,
+        uint uintEarlyHarvestCommission,
+        uint uintReferralPercent
+        ) {
+        return (
+        rewardPerBlock,
+        commissionInterval,
+        harvestInterval,
+        earlyHarvestCommission,
+        referralPercent
+        );
     }
-    
+
+    /// @notice Returns pool data in one request
+    /// @param _pairAddress The address of LP token
+    /// @return token0 First token address
+    /// @return token1 Second token address
+    /// @return token0symbol First token symbol
+    /// @return token1symbol Second token symbol
+    /// @return amount Liquidity pool size
+    /// @return poolShare Share of the pool based on allocation points
+    function getPoolData(address _pairAddress) public view returns (
+        address token0,
+        address token1,
+        string memory token0symbol,
+        string memory token1symbol,
+        uint amount,
+        uint poolShare
+    ) {
+        uint256 _pid = poolId[_pairAddress];
+        IPancakePair pairToken = IPancakePair(_pairAddress);
+        IERC20 _token0 = IERC20(pairToken.token0());
+        IERC20 _token1 = IERC20(pairToken.token1());
+
+        return (
+            pairToken.token0(),
+            pairToken.token1(),
+            _token0.symbol(),
+            _token1.symbol(),
+            pairToken.balanceOf(address(this)),
+            poolInfo[_pid].allocPoint * HUNDRED_PERCENTS / totalAllocPoint
+        );
+    }
+
+    /// @notice Returns pool data in one request
+    /// @param _pairAddress The ID of liquidity pool
+    /// @param _user The user address
+    /// @return balance User balance of LP token
+    /// @return userPool User liquidity pool size in the current pool
+    /// @return reward Current user reward in the current pool
+    /// @return isCanHarvest Is it time to harvest the reward
+    function getPoolUserData(address _pairAddress, address _user) public view returns (
+        uint balance,
+        uint userPool,
+        uint256 reward,
+        bool isCanHarvest
+    ) {
+        return (
+            IPancakePair(_pairAddress).balanceOf(_user),
+            userInfo[poolId[_pairAddress]][_user].amount,
+            getUserReward(_pairAddress, _user),
+            getIsUserCanHarvest(_pairAddress, _user)
+        );
+    }
+
     /// @notice Sets the commission interval
     /// @param interval Interval size in seconds
     function setCommissionInterval(uint interval) public onlyOwner {
@@ -382,79 +309,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     /// @notice Sets the harvest interval
     /// @param percents Commission in percents (10 for default 10%)
-    function setEarlyHarvesCommission(uint percents) public onlyOwner {
+    function setEarlyHarvestCommission(uint percents) public onlyOwner {
         earlyHarvestCommission = percents;
-    }
-
-    /// @notice Toggles the feature clearing reward for early withdrawal
-    function toggleRewardClearingForEarlyWithdrawals() public onlyOwner {
-        isUnrewardEarlyWithdrawals = !isUnrewardEarlyWithdrawals;
-    }
-
-    /// @notice Sets the reward cancel interval
-    /// @param interval Interval size in seconds
-    function setRewardCancelInterval(uint interval) public onlyOwner {
-        rewardCancelInterval = interval;
-    }
-
-    /// @notice Sets the default reward per block for a new pools
-    /// @param reward Reward per block
-    function setDefaultRewardPerBlock(uint reward) public onlyOwner {
-        defaultRewardPerBlock = reward;
-    }
-
-    /// @notice Sets the reward per block value for all pools and default value
-    /// @param reward Reward per block
-    function updateAllPoolsRewardsSizes(uint reward) public onlyOwner {
-        setDefaultRewardPerBlock(reward);
-        for (uint i = 0; i < poolsList.length; i++) {
-            pools[poolsList[i]].rewardPerBlock = reward;
-        }
-    }
-
-    /// @notice Returns poolsList array length
-    function getPoolsCount() public view returns (uint) {
-        return poolsList.length;
-    }
-
-    /// @notice Returns contract settings by one request
-    /// @return uintDefaultRewardPerBlock
-    /// @return uintCommissionInterval
-    /// @return uintHarvestInterval
-    /// @return uintEarlyHarvestCommission
-    /// @return boolIsUnrewardEarlyWithdrawals
-    /// @return uintRewardCancelInterval
-    /// @return uintReferralPercent
-    function getSettings() public view returns (
-        uint uintDefaultRewardPerBlock,
-        uint uintCommissionInterval,
-        uint uintHarvestInterval,
-        uint uintEarlyHarvestCommission,
-        bool boolIsUnrewardEarlyWithdrawals,
-        uint uintRewardCancelInterval,
-        uint uintReferralPercent
-        ) {
-        return (
-        defaultRewardPerBlock,
-        commissionInterval,
-        harvestInterval,
-        earlyHarvestCommission,
-        isUnrewardEarlyWithdrawals,
-        rewardCancelInterval,
-        referralPercent
-        );
-    }
-
-    /// @notice Sets the user's agent
-    /// @param agent Address of the agent who invited the user
-    /// @return False if the agent and the user have the same address
-    function setUserReferAgent(address agent) public returns (bool) {
-        if (address(msg.sender) != agent) {
-            refers[address(msg.sender)] = agent;
-            return true;
-        } else {
-            return false;
-        }
     }
 
     /// @notice Owner can set the referral percent
@@ -463,79 +319,148 @@ contract MasterChef is Ownable, ReentrancyGuard {
         referralPercent = percent;
     }
 
-    /// @notice Returns agent's reward amount for referral's reward
-    /// @param reward Referral's reward amount
-    /// @return Agent's reward amount
-    function getReferralReward(uint reward) internal view returns (uint) {
-        return reward * referralPercent / 100;
+    function massUpdatePools() public {
+        uint256 length = poolInfo.length;
+        for (uint256 pid = 0; pid < length; ++pid) {
+            updatePool(pid);
+        }
     }
 
-    /// @notice Sets a pool reward
-    /// @param pair The address of LP token
-    /// @param reward Amount of reward per block
-    function setPoolRewardPerBlock(address pair, uint reward) public onlyOwner {
-        pools[pair].rewardPerBlock = reward;
+    /// @notice Update reward variables of the given pool to be up-to-date
+    /// @param _pid Pool index
+    function updatePool(uint256 _pid) public {
+        PoolInfo storage pool = poolInfo[_pid];
+        if (block.number <= pool.lastRewardBlock) {
+            return;
+        }
+        uint256 lpSupply = pool.pairToken.balanceOf(address(this));
+        if (lpSupply == 0) {
+            pool.lastRewardBlock = block.number;
+            return;
+        }
+        uint256 blocks = block.number - pool.lastRewardBlock;
+        uint256 cakeReward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
+        pool.accRewardPerShare += cakeReward * 1e12 / lpSupply;
+        pool.lastRewardBlock = block.number;
     }
 
-    /// @notice Returns reward per block for selected pair
-    /// @param pair The address of LP token
-    /// @return Reward per block
-    function getPoolRewardPerBlock(address pair) public view returns (uint) {
-        return pools[pair].rewardPerBlock;
+    /// @notice Deposit LP tokens to the farm. It will try to harvest first
+    /// @param _pairAddress The address of LP token
+    /// @param _amount Amount of LP tokens to deposit
+    /// @param _referral Address of the agent who invited the user
+    function deposit(address _pairAddress, uint256 _amount, address _referral) public {
+        uint256 _pid = poolId[_pairAddress];
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+        updatePool(_pid);
+        if (user.amount > 0) {
+            uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
+            if (pending > 0) {
+                rewardTransfer(user, pending, false, _pid);
+            }
+        }
+        if (_amount > 0) {
+            pool.pairToken.transferFrom(address(msg.sender), address(this), _amount);
+            user.amount += _amount;
+        }
+        user.withdrawnReward = user.amount * pool.accRewardPerShare / 1e12;
+        user.depositTimestamp = block.timestamp;
+        emit Deposit(msg.sender, _pid, _amount);
+        if (_referral != address(0) && _referral != msg.sender && referrals[msg.sender] != _referral) {
+            referrals[msg.sender] = _referral;
+        }
     }
 
-    /// @notice Returns pool data in one request
-    /// @param pair The address of LP token
-    /// @return token0 First token address
-    /// @return token1 Second token address
-    /// @return token0symbol First token symbol
-    /// @return token1symbol Second token symbol
-    /// @return size Liquidity pool size
-    /// @return rewardPerBlock Amount of reward token per block
-    function getPoolData(address pair) public view returns (
-        address token0,
-        address token1,
-        string memory token0symbol,
-        string memory token1symbol,
-        uint size,
-        uint rewardPerBlock
-    ) {
-        Pool storage pool = pools[pair];
-        IPancakePair pairToken = IPancakePair(pair);
-        BEP20 _token0 = BEP20(pairToken.token0());
-        BEP20 _token1 = BEP20(pairToken.token1());
-
-        return (
-            pairToken.token0(),
-            pairToken.token1(),
-            _token0.symbol(),
-            _token1.symbol(),
-            getPoolSize(pair),
-            pool.rewardPerBlock
-        );
+    /// @notice Short version of deposit without refer
+    function deposit(address _pairAddress, uint256 _amount) public {
+        deposit(_pairAddress, _amount, address(0));
     }
 
-    /// @notice Returns pool data in one request
-    /// @param pair The address of LP token
-    /// @param userAddress The user address
-    /// @return balance User balance of LP token
-    /// @return userPool User liquidity pool size in the current pool
-    /// @return reward Current user reward in the current pool
-    /// @return isCanHarvest Is it time to harvest the reward
-    function getPoolUserData(address pair, address userAddress) public view returns (
-        uint balance,
-        uint userPool,
-        uint reward,
-        bool isCanHarvest
-    ) {
-        IPancakePair pairToken = IPancakePair(pair);
-
-        return (
-            pairToken.balanceOf(userAddress),
-            getUserPoolSize(pair, userAddress),
-            getUserReward(pair, userAddress),
-            getIsUserCanHarvest(pair, userAddress)
-        );
+    /// @notice Withdraw LP tokens from the farm. It will try to harvest first
+    /// @param _pairAddress The address of LP token
+    /// @param _amount Amount of LP tokens to withdraw
+    function withdraw(address _pairAddress, uint256 _amount) public {
+        uint256 _pid = poolId[_pairAddress];
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+        require(user.amount >= _amount, "Too big amount");
+        updatePool(_pid);
+        uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
+        if (pending > 0) {
+            rewardTransfer(user, pending, true, _pid);
+        }
+        if (_amount > 0) {
+            user.amount -= _amount;
+            pool.pairToken.transfer(address(msg.sender), _amount);
+        }
+        user.withdrawnReward = user.amount * pool.accRewardPerShare / 1e12;
+        emit Withdraw(msg.sender, _pid, _amount);
     }
 
+    /// @notice Returns LP tokens to the user with the entire reward reset to zero
+    function emergencyWithdraw(address _pairAddress) public {
+        uint256 _pid = poolId[_pairAddress];
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+        pool.pairToken.transfer(address(msg.sender), user.amount);
+        emit EmergencyWithdraw(msg.sender, _pid, user.amount);
+        user.amount = 0;
+        user.withdrawnReward = 0;
+        user.storedReward = 0;
+    }
+
+    /// @notice Try to harvest reward from the pool.
+    /// @notice Will send a reward to the user if enough time has passed since the last harvest
+    /// @param _pairAddress The address of LP token
+    function harvest(address _pairAddress) public {
+        uint256 _pid = poolId[_pairAddress];
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+        updatePool(_pid);
+        uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
+        if (pending > 0) {
+            rewardTransfer(user, pending, true, _pid);
+        }
+        user.withdrawnReward = user.amount * pool.accRewardPerShare / 1e12;
+    }
+
+    /// @notice Transfer reward with all checks
+    /// @param user UserInfo storage pointer
+    /// @param _amount Amount of reward to transfer
+    /// @param isWithdraw Set to false if it called by deposit function
+    /// @param _pid Pool index
+    function rewardTransfer(UserInfo storage user, uint256 _amount, bool isWithdraw, uint256 _pid) internal {
+        bool isCommissioning = block.timestamp - user.depositTimestamp < commissionInterval;
+        bool isEarlyHarvest = block.timestamp - user.harvestTimestamp < harvestInterval;
+        
+        if (isEarlyHarvest) {
+            user.storedReward = _amount;
+        } else {
+            uint amount = isWithdraw && isCommissioning
+                ? _amount * (HUNDRED_PERCENTS - earlyHarvestCommission) / HUNDRED_PERCENTS
+                : _amount;
+            uint narfexLeft = getNarfexLeft();
+            if (narfexLeft < amount) {
+                amount = narfexLeft;
+            }
+            if (amount > 0) {
+                rewardToken.transfer(msg.sender, amount);
+                emit Harvest(msg.sender, _pid, amount);
+                /// Send referral reward
+                address referral = referrals[msg.sender];
+                if (referral != address(0)) {
+                    amount = amount * referralPercent / HUNDRED_PERCENTS;
+                    narfexLeft = getNarfexLeft();
+                    if (narfexLeft < amount) {
+                        amount = narfexLeft;
+                    }
+                    if (amount > 0) {
+                        rewardToken.transfer(referral, amount);
+                    }
+                }
+            }
+            user.storedReward = 0;
+            user.harvestTimestamp = block.timestamp;
+        }
+    }
 }
