@@ -80,7 +80,7 @@ contract MasterChef is Ownable {
     ) {
         rewardToken = IERC20(_rewardToken);
         rewardPerBlock = _rewardPerBlock;
-        startBlock = block.timestamp;
+        startBlock = block.number;
     }
 
     /// @notice Count of created pools
@@ -133,6 +133,16 @@ contract MasterChef is Ownable {
         }
         totalAllocPoint = totalAllocPoint - poolInfo[_pid].allocPoint + _allocPoint;
         poolInfo[_pid].allocPoint = _allocPoint;
+    }
+
+    /// @notice Set a new reward per block amount
+    /// @param _amount Amount of reward tokens per block
+    /// @param _withUpdate Force update pools to fix previous rewards
+    function setRewardPerBlock(uint256 _amount, bool _withUpdate) public onlyOwner {
+        if (_withUpdate) {
+            massUpdatePools();
+        }
+        rewardPerBlock = _amount;
     }
 
     /// @notice Calculates the user's reward based on a blocks range
