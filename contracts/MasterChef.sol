@@ -2,18 +2,11 @@
 
 pragma solidity ^0.8.17;
 
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-
-interface IERC20 {
-    function symbol() external view returns (string memory);
-    function balanceOf(address account) external view returns (uint256);
-    function transfer(address recipient, uint256 amount) external returns (bool);
-    function transferFrom(
-        address sender,
-        address recipient,
-        uint256 amount
-    ) external returns (bool);
-}
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 interface IPancakePair {
     function balanceOf(address owner) external view returns (uint);
@@ -24,7 +17,8 @@ interface IPancakePair {
 /// @title Farming contract for minted Narfex Token
 /// @author Danil Sakhinov
 /// @notice Distributes a reward from the balance instead of minting it
-contract MasterChef is Ownable {
+contract MasterChef is Ownable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
 
     // User share of a pool
     struct UserInfo {
@@ -32,7 +26,6 @@ contract MasterChef is Ownable {
         uint withdrawnReward; // Reward already withdrawn
         uint depositTimestamp; // Last deposit time
         uint harvestTimestamp; // Last harvest time
-        uint storedReward; // Reward tokens accumulated in contract
     }
 
     struct PoolInfo {
@@ -43,23 +36,23 @@ contract MasterChef is Ownable {
     }
 
     // Reward to harvest
-    IERC20 public rewardToken;
+    IERC20 public immutable rewardToken;
     // The interval from the deposit in which the commission for the reward will be taken.
-    uint public commissionInterval = 14 days;
+    uint public earlyHarvestCommissionInterval = 14 days;
     // Interval since last harvest when next harvest is not possible
     uint public harvestInterval = 8 hours;
-    // Commission for to early harvests with 2 digits of presition (10000 = 100%)
+    // Commission for to early harvests with 2 digits of precision (10000 = 100%)
     uint public earlyHarvestCommission = 1000;
     // Referral percent for reward with 2 digits of precision (10000 = 100%)
     uint public referralPercent = 60;
     // Amount of NRFX per block for all pools
     uint256 public rewardPerBlock;
-    uint constant HUNDRED_PERCENTS = 10000;
+    uint constant internal HUNDRED_PERCENTS = 10000;
 
     // Info of each pool.
     PoolInfo[] public poolInfo;
     // Info of each user that stakes LP tokens.
-    mapping (uint256 => mapping (address => UserInfo)) public userInfo;
+    mapping (uint256 /*poolId*/ => mapping (address => UserInfo)) public userInfo;
     // Mapping of pools IDs for pair addresses
     mapping (address => uint256) public poolId;
     // Mapping of users referrals
@@ -67,12 +60,21 @@ contract MasterChef is Ownable {
     // Total allocation points. Must be the sum of all allocation points in all pools.
     uint256 public totalAllocPoint = 0;
     // The block number when farming starts
-    uint256 public startBlock;
+    uint256 public immutable startBlock;
 
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
     event Harvest(address indexed user, uint256 indexed pid, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event TotalAllocPointUpdated(uint256 totalAllocPoint);
+    event PoolAdded(uint256 indexed pid, address indexed pairToken, uint256 allocPoint);
+    event PoolAllocPointSet(uint256 indexed pid, uint256 allocPoint);
+    event RewardPerBlockSet(uint256 rewardPerBlock);
+    event EarlyHarvestCommissionIntervalSet(uint256 interval);
+    event ReferralPercentSet(uint256 percents);
+    event EarlyHarvestCommissionSet(uint256 percents);
+    event HarvestIntervalSet(uint256 interval);
+    event ReferralRewardPaid(address indexed referral, uint256 amount);
 
     constructor(
         address _rewardToken,
@@ -80,6 +82,7 @@ contract MasterChef is Ownable {
     ) {
         rewardToken = IERC20(_rewardToken);
         rewardPerBlock = _rewardPerBlock;
+        emit RewardPerBlockSet(rewardPerBlock);
         startBlock = block.number;
     }
 
@@ -97,23 +100,25 @@ contract MasterChef is Ownable {
 
     /// @notice Withdraw amount of reward token to the owner
     /// @param _amount Amount of reward tokens. Can be set to 0 to withdraw all reward tokens
-    function withdrawNarfex(uint _amount) public onlyOwner {
+    function withdrawNarfex(uint _amount) external onlyOwner nonReentrant {
         uint amount = _amount > 0
             ? _amount
             : getNarfexLeft();
-        rewardToken.transfer(address(msg.sender), amount);
+        rewardToken.safeTransfer(address(msg.sender), amount);
     }
 
     /// @notice Add a new pool
     /// @param _allocPoint Allocation point for this pool
     /// @param _pairToken Address of LP token contract
     /// @param _withUpdate Force update all pools
-    function add(uint256 _allocPoint, address _pairToken, bool _withUpdate) public onlyOwner {
+    function add(uint256 _allocPoint, address _pairToken, bool _withUpdate) external onlyOwner nonReentrant {
+        require(address(poolInfo[poolId[_pairToken]].pairToken) == address(0), "already exists");
         if (_withUpdate) {
-            massUpdatePools();
+            _massUpdatePools();
         }
         uint256 lastRewardBlock = block.number > startBlock ? block.number : startBlock;
         totalAllocPoint = totalAllocPoint + _allocPoint;
+        emit TotalAllocPointUpdated(totalAllocPoint);
         poolInfo.push(PoolInfo({
             pairToken: IERC20(_pairToken),
             allocPoint: _allocPoint,
@@ -121,28 +126,39 @@ contract MasterChef is Ownable {
             accRewardPerShare: 0
         }));
         poolId[_pairToken] = poolInfo.length - 1;
+        emit PoolAdded({
+            pid: poolId[_pairToken],
+            pairToken: _pairToken,
+            allocPoint: _allocPoint
+        });
     }
 
     /// @notice Update allocation points for a pool
     /// @param _pid Pool index
     /// @param _allocPoint Allocation points
     /// @param _withUpdate Force update all pools
-    function set(uint256 _pid, uint256 _allocPoint, bool _withUpdate) public onlyOwner {
+    function set(uint256 _pid, uint256 _allocPoint, bool _withUpdate) external onlyOwner nonReentrant {
         if (_withUpdate) {
-            massUpdatePools();
+            _massUpdatePools();
         }
-        totalAllocPoint = totalAllocPoint - poolInfo[_pid].allocPoint + _allocPoint;
+        totalAllocPoint = totalAllocPoint + _allocPoint - poolInfo[_pid].allocPoint;
+        emit TotalAllocPointUpdated(totalAllocPoint);
         poolInfo[_pid].allocPoint = _allocPoint;
+        emit PoolAllocPointSet({
+            pid: _pid,
+            allocPoint: _allocPoint
+        });
     }
 
     /// @notice Set a new reward per block amount
     /// @param _amount Amount of reward tokens per block
     /// @param _withUpdate Force update pools to fix previous rewards
-    function setRewardPerBlock(uint256 _amount, bool _withUpdate) public onlyOwner {
+    function setRewardPerBlock(uint256 _amount, bool _withUpdate) external onlyOwner nonReentrant {
         if (_withUpdate) {
-            massUpdatePools();
+            _massUpdatePools();
         }
         rewardPerBlock = _amount;
+        emit RewardPerBlockSet(_amount);
     }
 
     /// @notice Calculates the user's reward based on a blocks range
@@ -158,10 +174,10 @@ contract MasterChef is Ownable {
         uint256 lpSupply = pool.pairToken.balanceOf(address(this));
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
             uint256 blocks = block.number - pool.lastRewardBlock;
-            uint256 cakeReward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
-            accRewardPerShare += cakeReward * 1e12 / lpSupply;
+            uint256 reward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
+            accRewardPerShare += reward * 1e12 / lpSupply;
         }
-        return user.amount * accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
+        return user.amount * accRewardPerShare / 1e12 - user.withdrawnReward;
     }
 
     /// @notice If enough time has passed since the last harvest
@@ -182,7 +198,7 @@ contract MasterChef is Ownable {
     function getIsEarlyWithdraw(address _pairAddress, address _user) internal view returns (bool) {
         uint256 _pid = poolId[_pairAddress];
         UserInfo storage user = userInfo[_pid][_user];
-        bool isEarlyWithdraw = block.timestamp - user.depositTimestamp < commissionInterval;
+        bool isEarlyWithdraw = block.timestamp - user.depositTimestamp < earlyHarvestCommissionInterval;
         return !isEarlyWithdraw;
     }
 
@@ -196,21 +212,21 @@ contract MasterChef is Ownable {
     }
 
     /// @notice Returns contract settings by one request
-    /// @return uintRewardPerBlock
-    /// @return uintCommissionInterval
-    /// @return uintHarvestInterval
-    /// @return uintEarlyHarvestCommission
-    /// @return uintReferralPercent
+    /// @return uintRewardPerBlock uintRewardPerBlock
+    /// @return uintEarlyHarvestCommissionInterval uintEarlyHarvestCommissionInterval
+    /// @return uintHarvestInterval uintHarvestInterval
+    /// @return uintEarlyHarvestCommission uintEarlyHarvestCommission
+    /// @return uintReferralPercent uintReferralPercent
     function getSettings() public view returns (
         uint uintRewardPerBlock,
-        uint uintCommissionInterval,
+        uint uintEarlyHarvestCommissionInterval,
         uint uintHarvestInterval,
         uint uintEarlyHarvestCommission,
         uint uintReferralPercent
-        ) {
+    ) {
         return (
         rewardPerBlock,
-        commissionInterval,
+        earlyHarvestCommissionInterval,
         harvestInterval,
         earlyHarvestCommission,
         referralPercent
@@ -235,8 +251,8 @@ contract MasterChef is Ownable {
     ) {
         uint256 _pid = poolId[_pairAddress];
         IPancakePair pairToken = IPancakePair(_pairAddress);
-        IERC20 _token0 = IERC20(pairToken.token0());
-        IERC20 _token1 = IERC20(pairToken.token1());
+        IERC20Metadata _token0 = IERC20Metadata(pairToken.token0());
+        IERC20Metadata _token1 = IERC20Metadata(pairToken.token1());
 
         return (
             pairToken.token0(),
@@ -269,40 +285,54 @@ contract MasterChef is Ownable {
         );
     }
 
-    /// @notice Sets the commission interval
+    /// @notice Sets the early harvest commission interval
     /// @param interval Interval size in seconds
-    function setCommissionInterval(uint interval) public onlyOwner {
-        commissionInterval = interval;
+    function setEarlyHarvestCommissionInterval(uint interval) external onlyOwner nonReentrant {
+        earlyHarvestCommissionInterval = interval;
+        emit EarlyHarvestCommissionIntervalSet(interval);
     }
 
     /// @notice Sets the harvest interval
     /// @param interval Interval size in seconds
-    function setHarvestInterval(uint interval) public onlyOwner {
+    function setHarvestInterval(uint interval) external onlyOwner nonReentrant {
         harvestInterval = interval;
+        emit HarvestIntervalSet(interval);
     }
 
-    /// @notice Sets the harvest interval
-    /// @param percents Commission in percents (10 for default 10%)
-    function setEarlyHarvestCommission(uint percents) public onlyOwner {
+    /// @notice Sets the early harvest commission
+    /// @param percents Early harvest commission in percents (10 for default 10%)
+    function setEarlyHarvestCommission(uint percents) external onlyOwner nonReentrant {
         earlyHarvestCommission = percents;
+        emit EarlyHarvestCommissionSet(percents);
     }
 
-    /// @notice Owner can set the referral percent
-    /// @param percent Referral percent
-    function setReferralPercent(uint percent) public onlyOwner {
-        referralPercent = percent;
+    /// @notice Owner can set the referral percents
+    /// @param percents Referral percents
+    function setReferralPercent(uint percents) external onlyOwner nonReentrant {
+        referralPercent = percents;
+        emit ReferralPercentSet(percents);
     }
 
-    function massUpdatePools() public {
+    function massUpdatePools() external nonReentrant {
+        _massUpdatePools();
+    }
+
+    function _massUpdatePools() internal {
         uint256 length = poolInfo.length;
-        for (uint256 pid = 0; pid < length; ++pid) {
-            updatePool(pid);
+        unchecked {
+            for (uint256 pid = 0; pid < length; ++pid) {
+                _updatePool(pid);
+            }
         }
     }
 
     /// @notice Update reward variables of the given pool to be up-to-date
     /// @param _pid Pool index
-    function updatePool(uint256 _pid) public {
+    function updatePool(uint256 _pid) external nonReentrant {
+        _updatePool(_pid);
+    }
+
+    function _updatePool(uint256 _pid) internal {
         PoolInfo storage pool = poolInfo[_pid];
         if (block.number <= pool.lastRewardBlock) {
             return;
@@ -313,28 +343,35 @@ contract MasterChef is Ownable {
             return;
         }
         uint256 blocks = block.number - pool.lastRewardBlock;
-        uint256 cakeReward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
-        pool.accRewardPerShare += cakeReward * 1e12 / lpSupply;
+        uint256 reward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
+        pool.accRewardPerShare += reward * 1e12 / lpSupply;
         pool.lastRewardBlock = block.number;
+    }
+
+    /// @dev some erc20 may have internal transferFee or deflationary mechanism so the actual received amount after transfer will not match the transfer amount
+    function _safeTransferFromCheckingBalance(IERC20 token, address from, address to, uint256 amount) internal {
+        uint256 balanceBefore = token.balanceOf(to);
+        token.safeTransferFrom(from, to, amount);
+        require(token.balanceOf(to) - balanceBefore == amount, "transfer amount mismatch");
     }
 
     /// @notice Deposit LP tokens to the farm. It will try to harvest first
     /// @param _pairAddress The address of LP token
     /// @param _amount Amount of LP tokens to deposit
     /// @param _referral Address of the agent who invited the user
-    function deposit(address _pairAddress, uint256 _amount, address _referral) public {
+    function deposit(address _pairAddress, uint256 _amount, address _referral) public nonReentrant {
         uint256 _pid = poolId[_pairAddress];
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        updatePool(_pid);
+        _updatePool(_pid);
         if (user.amount > 0) {
-            uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
+            uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward;
             if (pending > 0) {
                 rewardTransfer(user, pending, false, _pid);
             }
         }
         if (_amount > 0) {
-            pool.pairToken.transferFrom(address(msg.sender), address(this), _amount);
+            _safeTransferFromCheckingBalance(IERC20(pool.pairToken), msg.sender, address(this), _amount);
             user.amount += _amount;
         }
         user.withdrawnReward = user.amount * pool.accRewardPerShare / 1e12;
@@ -358,14 +395,14 @@ contract MasterChef is Ownable {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         require(user.amount >= _amount, "Too big amount");
-        updatePool(_pid);
-        uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
+        _updatePool(_pid);
+        uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward;
         if (pending > 0) {
             rewardTransfer(user, pending, true, _pid);
         }
         if (_amount > 0) {
             user.amount -= _amount;
-            pool.pairToken.transfer(address(msg.sender), _amount);
+            pool.pairToken.safeTransfer(address(msg.sender), _amount);
         }
         user.withdrawnReward = user.amount * pool.accRewardPerShare / 1e12;
         emit Withdraw(msg.sender, _pid, _amount);
@@ -376,22 +413,20 @@ contract MasterChef is Ownable {
         uint256 _pid = poolId[_pairAddress];
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        pool.pairToken.transfer(address(msg.sender), user.amount);
+        pool.pairToken.safeTransfer(address(msg.sender), user.amount);
         emit EmergencyWithdraw(msg.sender, _pid, user.amount);
         user.amount = 0;
         user.withdrawnReward = 0;
-        user.storedReward = 0;
     }
 
-    /// @notice Try to harvest reward from the pool.
-    /// @notice Will send a reward to the user if enough time has passed since the last harvest
+    /// @notice Harvest reward from the pool and send to the user
     /// @param _pairAddress The address of LP token
     function harvest(address _pairAddress) public {
         uint256 _pid = poolId[_pairAddress];
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        updatePool(_pid);
-        uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
+        _updatePool(_pid);
+        uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward;
         if (pending > 0) {
             rewardTransfer(user, pending, true, _pid);
         }
@@ -404,13 +439,13 @@ contract MasterChef is Ownable {
     /// @param isWithdraw Set to false if it called by deposit function
     /// @param _pid Pool index
     function rewardTransfer(UserInfo storage user, uint256 _amount, bool isWithdraw, uint256 _pid) internal {
-        bool isCommissioning = block.timestamp - user.depositTimestamp < commissionInterval;
+        bool isEarlyHarvestCommission = block.timestamp - user.depositTimestamp < earlyHarvestCommissionInterval;
         bool isEarlyHarvest = block.timestamp - user.harvestTimestamp < harvestInterval;
         
         if (isEarlyHarvest) {
-            user.storedReward = _amount;
+            revert("too early");
         } else {
-            uint amount = isWithdraw && isCommissioning
+            uint amount = isWithdraw && isEarlyHarvestCommission
                 ? _amount * (HUNDRED_PERCENTS - earlyHarvestCommission) / HUNDRED_PERCENTS
                 : _amount;
             uint narfexLeft = getNarfexLeft();
@@ -418,7 +453,7 @@ contract MasterChef is Ownable {
                 amount = narfexLeft;
             }
             if (amount > 0) {
-                rewardToken.transfer(msg.sender, amount);
+                rewardToken.safeTransfer(msg.sender, amount);
                 emit Harvest(msg.sender, _pid, amount);
                 /// Send referral reward
                 address referral = referrals[msg.sender];
@@ -429,11 +464,11 @@ contract MasterChef is Ownable {
                         amount = narfexLeft;
                     }
                     if (amount > 0) {
-                        rewardToken.transfer(referral, amount);
+                        rewardToken.safeTransfer(referral, amount);
+                        emit ReferralRewardPaid(referral, amount);
                     }
                 }
             }
-            user.storedReward = 0;
             user.harvestTimestamp = block.timestamp;
         }
     }
