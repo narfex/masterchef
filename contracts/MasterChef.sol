@@ -26,6 +26,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint withdrawnReward; // Reward already withdrawn
         uint depositTimestamp; // Last deposit time
         uint harvestTimestamp; // Last harvest time
+        uint storedReward; // Reward tokens accumulated in contract (not paid yet)
     }
 
     struct PoolInfo {
@@ -177,7 +178,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
             uint256 reward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
             accRewardPerShare += reward * 1e12 / lpSupply;
         }
-        return user.amount * accRewardPerShare / 1e12 - user.withdrawnReward;
+        return user.amount * accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
     }
 
     /// @notice If enough time has passed since the last harvest
@@ -198,7 +199,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     function getIsEarlyWithdraw(address _pairAddress, address _user) internal view returns (bool) {
         uint256 _pid = poolId[_pairAddress];
         UserInfo storage user = userInfo[_pid][_user];
-        bool isEarlyWithdraw = block.timestamp - user.depositTimestamp < earlyHarvestCommissionInterval;
+        bool isEarlyWithdraw = block.timestamp - user.depositTimestamp < commissionInterval;
         return !isEarlyWithdraw;
     }
 
@@ -365,7 +366,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         UserInfo storage user = userInfo[_pid][msg.sender];
         _updatePool(_pid);
         if (user.amount > 0) {
-            uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward;
+            uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
             if (pending > 0) {
                 rewardTransfer(user, pending, false, _pid);
             }
@@ -396,7 +397,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         UserInfo storage user = userInfo[_pid][msg.sender];
         require(user.amount >= _amount, "Too big amount");
         _updatePool(_pid);
-        uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward;
+        uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
         if (pending > 0) {
             rewardTransfer(user, pending, true, _pid);
         }
@@ -417,6 +418,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         emit EmergencyWithdraw(msg.sender, _pid, user.amount);
         user.amount = 0;
         user.withdrawnReward = 0;
+        user.storedReward = 0;
     }
 
     /// @notice Harvest reward from the pool and send to the user
@@ -426,7 +428,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         _updatePool(_pid);
-        uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward;
+        uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
         if (pending > 0) {
             rewardTransfer(user, pending, true, _pid);
         }
@@ -443,7 +445,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         bool isEarlyHarvest = block.timestamp - user.harvestTimestamp < harvestInterval;
         
         if (isEarlyHarvest) {
-            revert("too early");
+            user.storedReward = _amount;
         } else {
             uint amount = isWithdraw && isEarlyHarvestCommission
                 ? _amount * (HUNDRED_PERCENTS - earlyHarvestCommission) / HUNDRED_PERCENTS
@@ -469,6 +471,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
                     }
                 }
             }
+            user.storedReward = 0;
             user.harvestTimestamp = block.timestamp;
         }
     }
