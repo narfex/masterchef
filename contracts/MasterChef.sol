@@ -199,7 +199,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     function getIsEarlyWithdraw(address _pairAddress, address _user) internal view returns (bool) {
         uint256 _pid = poolId[_pairAddress];
         UserInfo storage user = userInfo[_pid][_user];
-        bool isEarlyWithdraw = block.timestamp - user.depositTimestamp < commissionInterval;
+        bool isEarlyWithdraw = block.timestamp - user.depositTimestamp < earlyHarvestCommissionInterval;
         return !isEarlyWithdraw;
     }
 
