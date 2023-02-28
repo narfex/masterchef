@@ -114,7 +114,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
             if (poolInfo.length == 0) {
                 return false;
             } else {
-                return address(poolInfo[_poolId].pairToken) == _pairToken;
+                return address(poolInfo[0].pairToken) == _pairToken;
             }
         } else {
             return true;
