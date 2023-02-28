@@ -108,12 +108,25 @@ contract MasterChef is Ownable, ReentrancyGuard {
         rewardToken.safeTransfer(address(msg.sender), amount);
     }
 
+    function _poolExists(address _pairToken) internal returns(bool) {
+        uint256 _poolId = poolId[_pairToken];
+        if (_poolId == 0) {
+            if (poolInfo.length == 0) {
+                return false;
+            } else {
+                return address(poolInfo[0].pairToken) == _pairToken;
+            }
+        } else {
+            return true;
+        }
+    }
+
     /// @notice Add a new pool
     /// @param _allocPoint Allocation point for this pool
     /// @param _pairToken Address of LP token contract
     /// @param _withUpdate Force update all pools
     function add(uint256 _allocPoint, address _pairToken, bool _withUpdate) external onlyOwner nonReentrant {
-        require(address(poolInfo[poolId[_pairToken]].pairToken) == address(0), "already exists");
+        require(!_poolExists(_pairToken), "already exists");
         if (_withUpdate) {
             _massUpdatePools();
         }
