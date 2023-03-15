@@ -46,8 +46,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
     uint public earlyHarvestCommission = 1000;
     // Referral percent for reward with 2 digits of precision (10000 = 100%)
     uint public referralPercent = 60;
-    // Amount of NRFX per block for all pools
-    uint256 public rewardPerBlock;
+    // Block reward function coefficient
+    uint256 public k;
     uint constant internal HUNDRED_PERCENTS = 10000;
 
     // Info of each pool.
@@ -70,7 +70,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     event TotalAllocPointUpdated(uint256 totalAllocPoint);
     event PoolAdded(uint256 indexed pid, address indexed pairToken, uint256 allocPoint);
     event PoolAllocPointSet(uint256 indexed pid, uint256 allocPoint);
-    event RewardPerBlockSet(uint256 rewardPerBlock);
+    event KSet(uint256 k);
     event EarlyHarvestCommissionIntervalSet(uint256 interval);
     event ReferralPercentSet(uint256 percents);
     event EarlyHarvestCommissionSet(uint256 percents);
@@ -79,11 +79,11 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     constructor(
         address _rewardToken,
-        uint256 _rewardPerBlock
+        uint256 _k
     ) {
         rewardToken = IERC20(_rewardToken);
-        rewardPerBlock = _rewardPerBlock;
-        emit RewardPerBlockSet(rewardPerBlock);
+        k = _k;
+        emit KSet(_k);
         startBlock = block.number;
     }
 
@@ -108,7 +108,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         rewardToken.safeTransfer(address(msg.sender), amount);
     }
 
-    function _poolExists(address _pairToken) internal returns(bool) {
+    function _poolExists(address _pairToken) internal view returns(bool) {
         uint256 _poolId = poolId[_pairToken];
         if (_poolId == 0) {
             if (poolInfo.length == 0) {
@@ -164,15 +164,15 @@ contract MasterChef is Ownable, ReentrancyGuard {
         });
     }
 
-    /// @notice Set a new reward per block amount
-    /// @param _amount Amount of reward tokens per block
+    /// @notice Set a new block reward function coefficient
+    /// @param _k Amount of reward tokens per block
     /// @param _withUpdate Force update pools to fix previous rewards
-    function setRewardPerBlock(uint256 _amount, bool _withUpdate) external onlyOwner nonReentrant {
+    function setK(uint256 _k, bool _withUpdate) external onlyOwner nonReentrant {
         if (_withUpdate) {
             _massUpdatePools();
         }
-        rewardPerBlock = _amount;
-        emit RewardPerBlockSet(_amount);
+        k = _k;
+        emit KSet(_k);
     }
 
     /// @notice Calculates the user's reward based on a blocks range
@@ -188,7 +188,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint256 lpSupply = pool.pairToken.balanceOf(address(this));
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
             uint256 blocks = block.number - pool.lastRewardBlock;
-            uint256 reward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
+            uint256 totalReward = getNarfexLeft() * blocks - k * blocks**2 / 2;
+            uint256 reward = totalReward * pool.allocPoint / totalAllocPoint;
             accRewardPerShare += reward * 1e12 / lpSupply;
         }
         return user.amount * accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
@@ -226,20 +227,20 @@ contract MasterChef is Ownable, ReentrancyGuard {
     }
 
     /// @notice Returns contract settings by one request
-    /// @return uintRewardPerBlock uintRewardPerBlock
+    /// @return uintK uintK
     /// @return uintEarlyHarvestCommissionInterval uintEarlyHarvestCommissionInterval
     /// @return uintHarvestInterval uintHarvestInterval
     /// @return uintEarlyHarvestCommission uintEarlyHarvestCommission
     /// @return uintReferralPercent uintReferralPercent
     function getSettings() public view returns (
-        uint uintRewardPerBlock,
+        uint uintK,
         uint uintEarlyHarvestCommissionInterval,
         uint uintHarvestInterval,
         uint uintEarlyHarvestCommission,
         uint uintReferralPercent
     ) {
         return (
-        rewardPerBlock,
+        k,
         earlyHarvestCommissionInterval,
         harvestInterval,
         earlyHarvestCommission,
@@ -357,7 +358,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
             return;
         }
         uint256 blocks = block.number - pool.lastRewardBlock;
-        uint256 reward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
+        uint256 totalReward = getNarfexLeft() * blocks - k * blocks**2 / 2;
+        uint256 reward = totalReward * pool.allocPoint / totalAllocPoint;
         pool.accRewardPerShare += reward * 1e12 / lpSupply;
         pool.lastRewardBlock = block.number;
     }
