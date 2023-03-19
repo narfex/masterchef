@@ -62,6 +62,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
     uint256 public totalAllocPoint = 0;
     // The block number when farming starts
     uint256 public immutable startBlock;
+    // Contract rewards bank at the last pools update
+    uint256 public lastBalance;
 
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
@@ -188,7 +190,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint256 lpSupply = pool.pairToken.balanceOf(address(this));
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
             uint256 blocks = block.number - pool.lastRewardBlock;
-            uint256 totalReward = getNarfexLeft() * blocks - k * blocks**2 / 2;
+            uint256 totalReward = lastBalance * blocks - k * blocks**2 / 2;
             uint256 reward = totalReward * pool.allocPoint / totalAllocPoint;
             accRewardPerShare += reward * 1e12 / lpSupply;
         }
@@ -330,6 +332,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     function massUpdatePools() external nonReentrant {
         _massUpdatePools();
+        /// Update balance at the end of a transaction
+        lastBalance = getNarfexLeft();
     }
 
     function _massUpdatePools() internal {
@@ -339,12 +343,6 @@ contract MasterChef is Ownable, ReentrancyGuard {
                 _updatePool(pid);
             }
         }
-    }
-
-    /// @notice Update reward variables of the given pool to be up-to-date
-    /// @param _pid Pool index
-    function updatePool(uint256 _pid) external nonReentrant {
-        _updatePool(_pid);
     }
 
     function _updatePool(uint256 _pid) internal {
@@ -358,7 +356,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
             return;
         }
         uint256 blocks = block.number - pool.lastRewardBlock;
-        uint256 totalReward = getNarfexLeft() * blocks - k * blocks**2 / 2;
+        uint256 totalReward = lastBalance * blocks - k * blocks**2 / 2;
         uint256 reward = totalReward * pool.allocPoint / totalAllocPoint;
         pool.accRewardPerShare += reward * 1e12 / lpSupply;
         pool.lastRewardBlock = block.number;
@@ -379,7 +377,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint256 _pid = poolId[_pairAddress];
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        _updatePool(_pid);
+        _massUpdatePools();
         if (user.amount > 0) {
             uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
             if (pending > 0) {
@@ -396,6 +394,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
         if (_referral != address(0) && _referral != msg.sender && referrals[msg.sender] != _referral) {
             referrals[msg.sender] = _referral;
         }
+        /// Update balance at the end of a transaction
+        lastBalance = getNarfexLeft();
     }
 
     /// @notice Short version of deposit without refer
@@ -411,7 +411,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         require(user.amount >= _amount, "Too big amount");
-        _updatePool(_pid);
+        _massUpdatePools();
         uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
         if (pending > 0) {
             rewardTransfer(user, pending, true, _pid);
@@ -422,6 +422,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
         }
         user.withdrawnReward = user.amount * pool.accRewardPerShare / 1e12;
         emit Withdraw(msg.sender, _pid, _amount);
+        /// Update balance at the end of a transaction
+        lastBalance = getNarfexLeft();
     }
 
     /// @notice Returns LP tokens to the user with the entire reward reset to zero
@@ -442,12 +444,14 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint256 _pid = poolId[_pairAddress];
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        _updatePool(_pid);
+        _massUpdatePools();
         uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
         if (pending > 0) {
             rewardTransfer(user, pending, true, _pid);
         }
         user.withdrawnReward = user.amount * pool.accRewardPerShare / 1e12;
+        /// Update balance at the end of a transaction
+        lastBalance = getNarfexLeft();
     }
 
     /// @notice Transfer reward with all checks
