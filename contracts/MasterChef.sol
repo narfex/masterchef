@@ -34,6 +34,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint256 allocPoint; // How many allocation points assigned to this pool
         uint256 lastRewardBlock;  // Last block number that NRFX distribution occurs.
         uint256 accRewardPerShare; // Accumulated NRFX per share, times 1e12
+        bool exist;  // default storage slot value is false, set true on adding
     }
 
     // Reward to harvest
@@ -46,8 +47,10 @@ contract MasterChef is Ownable, ReentrancyGuard {
     uint public earlyHarvestCommission = 1000;
     // Referral percent for reward with 2 digits of precision (10000 = 100%)
     uint public referralPercent = 60;
+
     // Amount of NRFX per block for all pools
     uint256 public rewardPerBlock;
+
     uint constant internal HUNDRED_PERCENTS = 10000;
 
     // Info of each pool.
@@ -60,8 +63,52 @@ contract MasterChef is Ownable, ReentrancyGuard {
     mapping (address => address) private referrals;
     // Total allocation points. Must be the sum of all allocation points in all pools.
     uint256 public totalAllocPoint = 0;
+
     // The block number when farming starts
     uint256 public immutable startBlock;
+    // The block number when all allocated rewards will be distributed as rewards
+    uint256 public immutable endBlock;
+
+    // This variable we need to understand how many rewards WAS transferred to the contract since the last call
+    uint256 public lastRewardTokenBalance;
+    // restUnallocatedRewards = rewards % rewardPerBlock it's not enough to give new block so we keep it to accumulate with future rewards
+    uint256 public restUnallocatedRewards;
+
+    event NewRewardsAccounted(
+        uint256 newRewardsAmount,
+        uint256 newEndBlock,
+        uint256 newRestUnallocatedRewards,
+        uint256 newLastRewardTokenBalance
+    );
+
+    /**
+     * @notice Account new rewards from the reward pool. This function can be called periodically by anyone to distribute new rewards to the reward pool.
+     * @return True if the function successfully accounted new rewards, false otherwise.
+     */
+    function accountNewRewards() public beforeEndBlock {
+        uint256 currentBalance = rewardToken.balanceOf(address(this));
+        uint256 newRewardsAmount = currentBalance - lastRewardTokenBalance;
+        if (newRewardsAmount == 0) return;
+        uint256 newRewardsToAccount = newRewardsAmount + restUnallocatedRewards;
+        uint256 deltaBlocks = newRewardsToAccount / rewardPerBlock;
+        endBlock = endBlock + deltaBlocks;
+        restUnallocatedRewards = newRewardsToAccount - deltaBlocks * rewardPerBlock;  // (newRewardsAmount + restUnallocatedRewards) % rewardPerBlock
+        lastRewardTokenBalance = currentBalance;
+        emit NewRewardsAccounted({
+            newRewardsAmount: newRewardsAmount,
+            newEndBlock: endBlock,
+            newRestUnallocatedRewards: restUnallocatedRewards,
+            newLastRewardTokenBalance: lastRewardTokenBalance
+        });
+    }
+
+    modifier beforeEndBlock() {
+        require(block.number <= endBlock, "endBlock passed");
+    }
+
+    modifier afterEndBlock() {
+        require(block.number > endBlock, "endBlock not passed");
+    }
 
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
@@ -85,6 +132,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         rewardPerBlock = _rewardPerBlock;
         emit RewardPerBlockSet(rewardPerBlock);
         startBlock = block.number;
+        endBlock = block.number;
     }
 
     /// @notice Count of created pools
@@ -101,46 +149,24 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     /// @notice Withdraw amount of reward token to the owner
     /// @param _amount Amount of reward tokens. Can be set to 0 to withdraw all reward tokens
-    function withdrawNarfex(uint _amount) external onlyOwner nonReentrant {
-        _massUpdatePools();
-        uint256 accumulatedRewards;
-        unchecked {
-            for (uint256 i; i < poolInfo.length; i++) {
-                PoolInfo storage pool = poolInfo[i];
-                uint256 lpSupply = pool.pairToken.balanceOf(address(this));
-                accumulatedRewards += pool.accRewardPerShare * lpSupply / 1e12;
-            }
-        }
-        uint256 narfexLeft = getNarfexLeft();
-        uint256 amount = _amount > 0
-            ? _amount
-            : narfexLeft;
-        uint256 freeLeft = getNarfexLeft() - accumulatedRewards;
-        if (amount > freeLeft) {
-            amount = freeLeft;
-        }
-        rewardToken.safeTransfer(address(msg.sender), amount);
+    function withdrawNarfex(uint _amount) external onlyOwner nonReentrant afterEndBlock {
+        rewardToken.safeTransfer(address(msg.sender), restUnallocatedRewards);
     }
 
-    function _poolExists(address _pairToken) internal returns(bool) {
-        uint256 _poolId = poolId[_pairToken];
-        if (_poolId == 0) {
-            if (poolInfo.length == 0) {
-                return false;
-            } else {
-                return address(poolInfo[0].pairToken) == _pairToken;
-            }
-        } else {
-            return true;
-        }
+    modifier onlyExistPool(address _pairAddress) {
+        require(poolExists(_pairAddress), "pool not exist");
+    }
+    
+    function poolExists(address _pairAddress) public returns(bool) {
+        return poolInfo[poolId[_pairAddress]].exist;
     }
 
     /// @notice Add a new pool
     /// @param _allocPoint Allocation point for this pool
-    /// @param _pairToken Address of LP token contract
+    /// @param _pairAddress Address of LP token contract
     /// @param _withUpdate Force update all pools
-    function add(uint256 _allocPoint, address _pairToken, bool _withUpdate) external onlyOwner nonReentrant {
-        require(!_poolExists(_pairToken), "already exists");
+    function add(uint256 _allocPoint, address _pairAddress, bool _withUpdate) external onlyOwner nonReentrant {
+        require(!poolExists(_pairAddress), "already exists");
         if (_withUpdate) {
             _massUpdatePools();
         }
@@ -148,15 +174,16 @@ contract MasterChef is Ownable, ReentrancyGuard {
         totalAllocPoint = totalAllocPoint + _allocPoint;
         emit TotalAllocPointUpdated(totalAllocPoint);
         poolInfo.push(PoolInfo({
-            pairToken: IERC20(_pairToken),
+            pairToken: IERC20(_pairAddress),
             allocPoint: _allocPoint,
             lastRewardBlock: lastRewardBlock,
-            accRewardPerShare: 0
+            accRewardPerShare: 0,
+            exist: true
         }));
-        poolId[_pairToken] = poolInfo.length - 1;
+        poolId[_pairAddress] = poolInfo.length - 1;
         emit PoolAdded({
-            pid: poolId[_pairToken],
-            pairToken: _pairToken,
+            pid: poolId[_pairAddress],
+            pairToken: _pairAddress,
             allocPoint: _allocPoint
         });
     }
@@ -171,7 +198,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         }
         totalAllocPoint = totalAllocPoint + _allocPoint - poolInfo[_pid].allocPoint;
         emit TotalAllocPointUpdated(totalAllocPoint);
-        poolInfo[_pid].allocPoint = _allocPoint;
+        poolInfo[_pid].allocPoint = _allocPoint;  // note: revert if not exist
         emit PoolAllocPointSet({
             pid: _pid,
             allocPoint: _allocPoint
@@ -182,11 +209,11 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @param _amount Amount of reward tokens per block
     /// @param _withUpdate Force update pools to fix previous rewards
     function setRewardPerBlock(uint256 _amount, bool _withUpdate) external onlyOwner nonReentrant {
-        if (_withUpdate) {
-            _massUpdatePools();
-        }
+        _massUpdatePools();
+        accountNewRewards();
         rewardPerBlock = _amount;
         emit RewardPerBlockSet(_amount);
+        accountNewRewards();  // call it twice since rest could be dividable by new rewardPerBlock;
     }
 
     /// @notice Calculates the user's reward based on a blocks range
@@ -269,7 +296,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @return token1symbol Second token symbol
     /// @return amount Liquidity pool size
     /// @return poolShare Share of the pool based on allocation points
-    function getPoolData(address _pairAddress) public view returns (
+    function getPoolData(address _pairAddress) public view onlyExistPool(_pairAddress) returns (
         address token0,
         address token1,
         string memory token0symbol,
@@ -418,12 +445,13 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @notice Withdraw LP tokens from the farm. It will try to harvest first
     /// @param _pairAddress The address of LP token
     /// @param _amount Amount of LP tokens to withdraw
-    function withdraw(address _pairAddress, uint256 _amount) public {
-        uint256 _pid = poolId[_pairAddress];
+    function withdraw(address _pairAddress, uint256 _amount) public onlyExistPool {
+        uint256 _pid = poolId[_pairAddress];  // todo harvest
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         require(user.amount >= _amount, "Too big amount");
         _updatePool(_pid);
+        _harvest(_pairAddress);
         uint256 pending = user.amount * pool.accRewardPerShare / 1e12 - user.withdrawnReward + user.storedReward;
         if (pending > 0) {
             rewardTransfer(user, pending, true, _pid);
@@ -448,10 +476,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
         user.storedReward = 0;
     }
 
-    /// @notice Harvest reward from the pool and send to the user
-    /// @param _pairAddress The address of LP token
-    function harvest(address _pairAddress) public {
-        uint256 _pid = poolId[_pairAddress];
+    function _harvest(address _pairAddress) internal {
+        uint256 _pid = poolId[_pairAddress];  // todo update pool?
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         _updatePool(_pid);
@@ -460,6 +486,12 @@ contract MasterChef is Ownable, ReentrancyGuard {
             rewardTransfer(user, pending, true, _pid);
         }
         user.withdrawnReward = user.amount * pool.accRewardPerShare / 1e12;
+    }
+    
+    /// @notice Harvest reward from the pool and send to the user
+    /// @param _pairAddress The address of LP token
+    function harvest(address _pairAddress) public onlyExistPool {
+        _harvest(_pairAddress);
     }
 
     /// @notice Transfer reward with all checks
