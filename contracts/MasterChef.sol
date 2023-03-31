@@ -102,9 +102,23 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @notice Withdraw amount of reward token to the owner
     /// @param _amount Amount of reward tokens. Can be set to 0 to withdraw all reward tokens
     function withdrawNarfex(uint _amount) external onlyOwner nonReentrant {
-        uint amount = _amount > 0
+        _massUpdatePools();
+        uint256 accumulatedRewards;
+        unchecked {
+            for (uint256 i; i < poolInfo.length; i++) {
+                PoolInfo storage pool = poolInfo[i];
+                uint256 lpSupply = pool.pairToken.balanceOf(address(this));
+                accumulatedRewards += pool.accRewardPerShare * lpSupply / 1e12;
+            }
+        }
+        uint256 narfexLeft = getNarfexLeft();
+        uint256 amount = _amount > 0
             ? _amount
-            : getNarfexLeft();
+            : narfexLeft;
+        uint256 freeLeft = getNarfexLeft() - accumulatedRewards;
+        if (amount > freeLeft) {
+            amount = freeLeft;
+        }
         rewardToken.safeTransfer(address(msg.sender), amount);
     }
 
