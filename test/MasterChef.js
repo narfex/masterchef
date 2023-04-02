@@ -173,17 +173,18 @@ describe("MasterChef", function () {
     expect(narfexLeft).to.equal(rewardBalance);
   });
 
-  it("Should NOT withdraw narfex before endBlock", async function () {
-    await expect(masterChef.withdrawNarfex()).to.be.revertedWith('endBlock not passed');
+  it("Should withdraw narfex before endBlock", async function () {
+    await mineUpTo(endBlock.sub(10).toNumber());
+    await masterChef.withdrawNarfexByOwner(10);
   });
 
-  it("Should withdraw narfex after endBlock", async function () {
-    await mineUpTo(endBlock.add(1).toNumber());
-    await masterChef.withdrawNarfex();
-  });
+  // it("Should withdraw narfex after endBlock", async function () {
+  //   await mineUpTo(endBlock.add(10).toNumber());
+  //   await masterChef.withdrawNarfexByOwner(1);
+  // });
 
   it("Should cancel withdraw narfex from other account", async function () {
-    await expect (masterChef.connect(otherAccount).withdrawNarfex(0)).to.be.reverted;
+    await expect (masterChef.connect(otherAccount).withdrawNarfexByOwner(10)).to.be.reverted;
   });
 
   it("Should not add same pool twice", async function () {

@@ -96,6 +96,62 @@ contract MasterChef is Ownable, ReentrancyGuard {
     event NoNewRewardsAccounted();
 
     /**
+     * @dev Emitted when the end block is recalculated (because of rewardPerBlock change).
+     * @param newEndBlock The new end block number.
+     * @param newRestUnallocatedRewards The new value of rest unallocated rewards.
+     */
+    event EndBlockRecalculatedBecauseOfRewardPerBlockChange(uint256 newEndBlock, uint256 newRestUnallocatedRewards);
+
+    /**
+     * @dev Emitted when the end block is recalculated (because of owner withdraw).
+     * @param newEndBlock The new end block number.
+     * @param newRestUnallocatedRewards The new value of rest unallocated rewards.
+     */
+    event EndBlockRecalculatedBecauseOfOwnerWithdraw(uint256 newEndBlock, uint256 newRestUnallocatedRewards);
+
+    /**
+     * @dev Emitted when the owner withdraws Narfex tokens.
+     * @param owner The address of the owner who withdraws the tokens.
+     * @param amount The amount of Narfex tokens withdrawn by the owner.
+     */
+    event WithdrawNarfexByOwner(address indexed owner, uint256 amount);
+
+    event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
+    event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event Harvest(address indexed user, uint256 indexed pid, uint256 amount);
+    event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event TotalAllocPointUpdated(uint256 totalAllocPoint);
+    event PoolAdded(uint256 indexed pid, address indexed pairToken, uint256 allocPoint);
+    event PoolAllocPointSet(uint256 indexed pid, uint256 allocPoint);
+    event RewardPerBlockSet(uint256 rewardPerBlock);
+    event EarlyHarvestCommissionIntervalSet(uint256 interval);
+    event ReferralPercentSet(uint256 percents);
+    event EarlyHarvestCommissionSet(uint256 percents);
+    event HarvestIntervalSet(uint256 interval);
+    event ReferralRewardPaid(address indexed referral, uint256 amount);
+
+    constructor(
+        address _rewardToken,
+        uint256 _rewardPerBlock
+    ) {
+        rewardToken = IERC20(_rewardToken);
+        rewardPerBlock = _rewardPerBlock;
+        emit RewardPerBlockSet(rewardPerBlock);
+        startBlock = block.number;
+        endBlock = block.number;
+    }
+
+    modifier beforeEndBlock() {
+        require(block.number <= endBlock, "endBlock passed");
+        _;
+    }
+
+    modifier afterEndBlock() {
+        require(block.number > endBlock, "endBlock not passed");
+        _;
+    }
+
+    /**
      * @notice Account new rewards from the reward pool. This function can be called periodically by anyone to distribute new rewards to the reward pool.
      */
     function accountNewRewards() public {
@@ -133,56 +189,33 @@ contract MasterChef is Ownable, ReentrancyGuard {
         });
     }
 
-    modifier beforeEndBlock() {
-        require(block.number <= endBlock, "endBlock passed");
-        _;
-    }
-
-    modifier afterEndBlock() {
-        require(block.number > endBlock, "endBlock not passed");
-        _;
-    }
-
-    event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
-    event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
-    event Harvest(address indexed user, uint256 indexed pid, uint256 amount);
-    event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
-    event TotalAllocPointUpdated(uint256 totalAllocPoint);
-    event PoolAdded(uint256 indexed pid, address indexed pairToken, uint256 allocPoint);
-    event PoolAllocPointSet(uint256 indexed pid, uint256 allocPoint);
-    event RewardPerBlockSet(uint256 rewardPerBlock);
-    event EarlyHarvestCommissionIntervalSet(uint256 interval);
-    event ReferralPercentSet(uint256 percents);
-    event EarlyHarvestCommissionSet(uint256 percents);
-    event HarvestIntervalSet(uint256 interval);
-    event ReferralRewardPaid(address indexed referral, uint256 amount);
-
-    constructor(
-        address _rewardToken,
-        uint256 _rewardPerBlock
-    ) {
-        rewardToken = IERC20(_rewardToken);
-        rewardPerBlock = _rewardPerBlock;
-        emit RewardPerBlockSet(rewardPerBlock);
-        startBlock = block.number;
-        endBlock = block.number;
-    }
-
     /// @notice Count of created pools
     /// @return poolInfo length
     function getPoolsCount() external view returns (uint256) {
         return poolInfo.length;
     }
 
-    /// @notice Returns the soil fertility
+    /// @notice Returns the balance of reward token in the contract
     /// @return Reward left in the common pool
     function getNarfexLeft() public view returns (uint) {
         return rewardToken.balanceOf(address(this));
     }
 
     /// @notice Withdraw amount of reward token to the owner. Owner may only withdraw unallocated rewards tokens after the end block.
-    function withdrawNarfex() external onlyOwner nonReentrant afterEndBlock {
-        rewardToken.safeTransfer(address(msg.sender), restUnallocatedRewards);
+    function withdrawNarfexByOwner(uint256 amount) external onlyOwner nonReentrant {
+        require(amount > 0, "amount must be > 0");
+        require(amount <= getNarfexLeft(), "not enough left");
+        uint256 leftBlock = (block.number > endBlock) ? endBlock : block.number;
+        uint256 futureBlocks = endBlock - leftBlock;
+        uint256 futureRestUnallocatedRewards = futureBlocks * rewardPerBlock + restUnallocatedRewards;
+        require(amount <= futureRestUnallocatedRewards, "not enough unallocated rewards");
+        uint256 newUnallocatedRewards = futureRestUnallocatedRewards - amount;
+        uint256 blocks = newUnallocatedRewards / rewardPerBlock;
+        endBlock = block.number + blocks;
+        restUnallocatedRewards = newUnallocatedRewards - blocks * rewardPerBlock;
+        emit EndBlockRecalculatedBecauseOfOwnerWithdraw(endBlock, restUnallocatedRewards);
+        emit WithdrawNarfexByOwner(msg.sender, amount);
+        rewardToken.safeTransfer(address(msg.sender), amount);
     }
 
     modifier onlyExistPool(address _pairAddress) {
@@ -244,11 +277,23 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @notice Set a new reward per block amount (runs _massUpdatePools)
     /// @param _amount Amount of reward tokens per block
     function setRewardPerBlock(uint256 _amount) external onlyOwner beforeEndBlock nonReentrant {
+        uint256 oldRewardPerBlock = rewardPerBlock;
+
         _massUpdatePools();
         accountNewRewards();
         rewardPerBlock = _amount;
         emit RewardPerBlockSet(_amount);
-        accountNewRewards();  // call it twice since rest could be dividable by new rewardPerBlock;
+
+        // endBlock = currentBlock = unallocatedRewards / rewardPerBlock
+        // so now there is a tricky moment because we have to update the endBlock
+        uint256 futureRewards = (endBlock - block.number) * oldRewardPerBlock + restUnallocatedRewards;
+        uint256 deltaBlocks = futureRewards / rewardPerBlock;
+        endBlock = endBlock + deltaBlocks;
+        restUnallocatedRewards = futureRewards - deltaBlocks * rewardPerBlock;
+        emit EndBlockRecalculatedBecauseOfRewardPerBlockChange({
+            newEndBlock: endBlock,
+            newRestUnallocatedRewards: restUnallocatedRewards
+        });
     }
 
     /// @notice Calculates the user's reward based on a blocks range
