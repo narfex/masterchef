@@ -67,7 +67,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     // The block number when farming starts
     uint256 public immutable startBlock;
     // The block number when all allocated rewards will be distributed as rewards
-    uint256 public immutable endBlock;
+    uint256 public endBlock;
 
     // This variable we need to understand how many rewards WAS transferred to the contract since the last call
     uint256 public lastRewardTokenBalance;
@@ -83,14 +83,15 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     /**
      * @notice Account new rewards from the reward pool. This function can be called periodically by anyone to distribute new rewards to the reward pool.
-     * @return True if the function successfully accounted new rewards, false otherwise.
      */
     function accountNewRewards() public {
         uint256 currentBalance = rewardToken.balanceOf(address(this));
         uint256 newRewardsAmount = currentBalance - lastRewardTokenBalance;
         if (newRewardsAmount == 0) return;
         uint256 newRewardsToAccount = newRewardsAmount + restUnallocatedRewards;
-        if (block.number > endBlock) {  // allow admin to withdraw it
+        if ((block.number > endBlock) && (startBlock != endBlock)) {
+            // allow admin to withdraw rewards after endBlock
+            // note that if startBlock == endBlock it will make initial endBlock setting
             restUnallocatedRewards = newRewardsToAccount;
             emit NewRewardsAccounted({
                 newRewardsAmount: newRewardsAmount,
@@ -114,10 +115,12 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     modifier beforeEndBlock() {
         require(block.number <= endBlock, "endBlock passed");
+        _;
     }
 
     modifier afterEndBlock() {
         require(block.number > endBlock, "endBlock not passed");
+        _;
     }
 
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
@@ -157,17 +160,20 @@ contract MasterChef is Ownable, ReentrancyGuard {
         return rewardToken.balanceOf(address(this));
     }
 
-    /// @notice Withdraw amount of reward token to the owner
-    /// @param _amount Amount of reward tokens. Can be set to 0 to withdraw all reward tokens
-    function withdrawNarfex(uint _amount) external onlyOwner nonReentrant afterEndBlock {
+    /// @notice Withdraw amount of reward token to the owner. Owner may only withdraw unallocated rewards tokens after the end block.
+    function withdrawNarfex() external onlyOwner nonReentrant afterEndBlock {
         rewardToken.safeTransfer(address(msg.sender), restUnallocatedRewards);
     }
 
     modifier onlyExistPool(address _pairAddress) {
         require(poolExists(_pairAddress), "pool not exist");
+        _;
     }
     
-    function poolExists(address _pairAddress) public returns(bool) {
+    function poolExists(address _pairAddress) public view returns(bool) {
+        if (poolInfo.length == 0) {  // prevent out of bounds error
+            return false;
+        }
         return poolInfo[poolId[_pairAddress]].exist;
     }
 
@@ -215,10 +221,9 @@ contract MasterChef is Ownable, ReentrancyGuard {
         });
     }
 
-    /// @notice Set a new reward per block amount
+    /// @notice Set a new reward per block amount (runs _massUpdatePools)
     /// @param _amount Amount of reward tokens per block
-    /// @param _withUpdate Force update pools to fix previous rewards
-    function setRewardPerBlock(uint256 _amount, bool _withUpdate) external onlyOwner beforeEndBlock nonReentrant {
+    function setRewardPerBlock(uint256 _amount) external onlyOwner beforeEndBlock nonReentrant {
         _massUpdatePools();
         accountNewRewards();
         rewardPerBlock = _amount;
@@ -417,7 +422,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @param _pairAddress The address of LP token
     /// @param _amount Amount of LP tokens to deposit
     /// @param _referral Address of the agent who invited the user
-    function deposit(address _pairAddress, uint256 _amount, address _referral) public poolExists(_pairAddress) beforeEndBlock nonReentrant {
+    function deposit(address _pairAddress, uint256 _amount, address _referral) public onlyExistPool(_pairAddress) beforeEndBlock nonReentrant {
         accountNewRewards();
         uint256 _pid = poolId[_pairAddress];
         PoolInfo storage pool = poolInfo[_pid];
@@ -442,14 +447,14 @@ contract MasterChef is Ownable, ReentrancyGuard {
     }
 
     /// @notice Short version of deposit without refer
-    function deposit(address _pairAddress, uint256 _amount) public {
+    function depositWithoutRefer(address _pairAddress, uint256 _amount) public {
         deposit(_pairAddress, _amount, address(0));
     }
 
     /// @notice Withdraw LP tokens from the farm. It will try to harvest first
     /// @param _pairAddress The address of LP token
     /// @param _amount Amount of LP tokens to withdraw
-    function withdraw(address _pairAddress, uint256 _amount) public onlyExistPool {
+    function withdraw(address _pairAddress, uint256 _amount) public onlyExistPool(_pairAddress) {
         accountNewRewards();
         uint256 _pid = poolId[_pairAddress];
         PoolInfo storage pool = poolInfo[_pid];
@@ -495,7 +500,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     
     /// @notice Harvest reward from the pool and send to the user
     /// @param _pairAddress The address of LP token
-    function harvest(address _pairAddress) public onlyExistPool {
+    function harvest(address _pairAddress) public onlyExistPool(_pairAddress) {
         _harvest(_pairAddress);
     }
 
