@@ -284,7 +284,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         rewardPerBlock = _amount;
         emit RewardPerBlockSet(_amount);
 
-        // endBlock = currentBlock = unallocatedRewards / rewardPerBlock
+        // endBlock = currentBlock + unallocatedRewards / rewardPerBlock
         // so now there is a tricky moment because we have to update the endBlock
         uint256 futureRewards = (endBlock - block.number) * oldRewardPerBlock + restUnallocatedRewards;
         uint256 deltaBlocks = futureRewards / rewardPerBlock;
