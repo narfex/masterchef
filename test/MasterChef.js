@@ -32,6 +32,7 @@ describe("MasterChef", function () {
   let NarfexMock;
   let MasterChef;
   let LpTokenMock;
+  let tx;  // last transaction
 
   before(async function () {
     [owner, otherAccount] = await ethers.getSigners();
@@ -51,7 +52,7 @@ describe("MasterChef", function () {
 
     rewardBalance = bn('100000');
     await narfex.transfer(masterChef.address, rewardBalance.toString());
-    const tx = await masterChef.accountNewRewards();
+    tx = await masterChef.accountNewRewards();
     startBlock = bn((await masterChef.startBlock()).toString());
     const expectedEndBlock = startBlock.add(rewardBalance.div(rewardPerBlock))
     await expect(tx).to.emit(masterChef, 'NewRewardsAccounted').withNamedArgs({
@@ -59,13 +60,48 @@ describe("MasterChef", function () {
       newEndBlock: expectedEndBlock.toString(),
       newRestUnallocatedRewards: bn('0'),
       newLastRewardTokenBalance: rewardBalance,
+      afterEndBlock: false,
     })
-    await tx.wait();
     expect(await masterChef.endBlock()).equal(expectedEndBlock.toString());
+    expect(await masterChef.restUnallocatedRewards()).equal('0');
 
     lptoken = await LpTokenMock.deploy();
     await lptoken.deployed();
     endBlock = bn((await masterChef.endBlock()).toString());
+  });
+
+    it("Account no new incoming rewards", async function () {
+      tx = await masterChef.accountNewRewards();
+      await expect(tx).to.emit(masterChef, 'NoNewRewardsAccounted');
+    });
+
+  it("Account new incoming rewards before endBlock", async function () {
+    const newRewardsAmount = bn('105');  // should give another 10 blocks + 5 as a rest
+    await narfex.transfer(masterChef.address, newRewardsAmount);
+    tx = await masterChef.accountNewRewards();
+    await expect(tx).to.emit(masterChef, 'NewRewardsAccounted').withNamedArgs({
+      newRewardsAmount: newRewardsAmount,
+      newEndBlock: endBlock.add(bn('10')).toString(),
+      newRestUnallocatedRewards: bn('5'),
+      newLastRewardTokenBalance: rewardBalance.add(newRewardsAmount),
+      afterEndBlock: false,
+    })
+    expect(await masterChef.endBlock()).equal(endBlock.add(bn(10)));
+    expect(await masterChef.restUnallocatedRewards()).equal('5');
+  });
+
+  it("Account new incoming rewards after endBlock", async function () {
+    mineUpTo(endBlock.toNumber() + 1);
+    const newRewardsAmount = bn('105');  // should give another 10 blocks + 5 as a rest
+    await narfex.transfer(masterChef.address, newRewardsAmount);
+    tx = await masterChef.accountNewRewards();
+    await expect(tx).to.emit(masterChef, 'NewRewardsAccounted').withNamedArgs({
+      newRewardsAmount: newRewardsAmount,
+      newEndBlock: endBlock,
+      newRestUnallocatedRewards: bn('105'),
+      newLastRewardTokenBalance: rewardBalance.add(newRewardsAmount),
+      afterEndBlock: true,
+    })
   });
 
   it("Should set harvest interval", async function () {
@@ -115,6 +151,11 @@ describe("MasterChef", function () {
     await expect (masterChef.connect(otherAccount).setReferralPercent(5)).to.be.reverted;
   });
 
+  it("Should not mass update pools after endBlock", async function () {
+    await mineUpTo(endBlock.toNumber() + 1);
+    await expect(masterChef.add(1000, lptoken.address, 0)).to.be.revertedWith('endBlock passed');
+  });
+
   it("Should mass update pools", async function () {
     await masterChef.add(1000, lptoken.address, 0);
     await masterChef.massUpdatePools();
@@ -145,9 +186,14 @@ describe("MasterChef", function () {
     await expect (masterChef.connect(otherAccount).withdrawNarfex(0)).to.be.reverted;
   });
 
+  it("Should not add same pool twice", async function () {
+    await masterChef.add(1000, lptoken.address, 1);
+    await expect(masterChef.add(1000, lptoken.address, 1)).to.be.revertedWith('already exists');
+  });
+
   it("Should cancel a new pool from other account", async function () {
     await lptoken.mint(owner.address,100000);
-    await expect (masterChef.connect(otherAccount).add(1000, lptoken.address, 1)).to.be.reverted;
+    await expect (masterChef.connect(otherAccount).add(1000, lptoken.address, 1)).to.be.revertedWith('Ownable: caller is not the owner');
   });
 
   it("Should add a new pool", async function () {

@@ -74,12 +74,26 @@ contract MasterChef is Ownable, ReentrancyGuard {
     // restUnallocatedRewards = rewards % rewardPerBlock it's not enough to give new block so we keep it to accumulate with future rewards
     uint256 public restUnallocatedRewards;
 
+    /**
+     * @dev Event emitted as a result of accounting for new rewards.
+     * @param newRewardsAmount The amount of new rewards that were accounted for.
+     * @param newEndBlock The block number until which new rewards will be accounted for.
+     * @param newRestUnallocatedRewards The remaining unallocated amount of rewards.
+     * @param newLastRewardTokenBalance The token balance in the master chef contract after accounting for new rewards.
+     * @param afterEndBlock Flag indicating whether the accounting was done after the end of the term.
+     */
     event NewRewardsAccounted(
         uint256 newRewardsAmount,
         uint256 newEndBlock,
         uint256 newRestUnallocatedRewards,
-        uint256 newLastRewardTokenBalance
+        uint256 newLastRewardTokenBalance,
+        bool afterEndBlock
     );
+
+    /**
+     * @dev Event emitted in case no new rewards were accounted for.
+     */
+    event NoNewRewardsAccounted();
 
     /**
      * @notice Account new rewards from the reward pool. This function can be called periodically by anyone to distribute new rewards to the reward pool.
@@ -87,17 +101,22 @@ contract MasterChef is Ownable, ReentrancyGuard {
     function accountNewRewards() public {
         uint256 currentBalance = rewardToken.balanceOf(address(this));
         uint256 newRewardsAmount = currentBalance - lastRewardTokenBalance;
-        if (newRewardsAmount == 0) return;
+        if (newRewardsAmount == 0) {
+            emit NoNewRewardsAccounted();
+            return;
+        }
         uint256 newRewardsToAccount = newRewardsAmount + restUnallocatedRewards;
         if ((block.number > endBlock) && (startBlock != endBlock)) {
             // allow admin to withdraw rewards after endBlock
             // note that if startBlock == endBlock it will make initial endBlock setting
             restUnallocatedRewards = newRewardsToAccount;
+            lastRewardTokenBalance = currentBalance;
             emit NewRewardsAccounted({
                 newRewardsAmount: newRewardsAmount,
                 newEndBlock: endBlock,
                 newRestUnallocatedRewards: restUnallocatedRewards,
-                newLastRewardTokenBalance: lastRewardTokenBalance
+                newLastRewardTokenBalance: lastRewardTokenBalance,
+                afterEndBlock: true
             });
             return;
         }
@@ -109,7 +128,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
             newRewardsAmount: newRewardsAmount,
             newEndBlock: endBlock,
             newRestUnallocatedRewards: restUnallocatedRewards,
-            newLastRewardTokenBalance: lastRewardTokenBalance
+            newLastRewardTokenBalance: lastRewardTokenBalance,
+            afterEndBlock: false
         });
     }
 

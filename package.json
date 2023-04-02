@@ -23,7 +23,8 @@
     "ethereum-waffle": "4.0.10",
     "ethers": "^5.6.4",
     "hardhat": "^2.9.3",
-    "mocha": "^10.2.0"
+    "mocha": "^10.2.0",
+    "solidity-coverage": "^0.8.2"
   },
   "scripts": {
     "compile": "npx hardhat compile",
