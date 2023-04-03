@@ -27,15 +27,19 @@ describe("MasterChef", function () {
   let startBlock;
   let endBlock;
   let owner;
+  let feeTreasury;
   let otherAccount;
   let lptoken;
   let NarfexMock;
   let MasterChef;
   let LpTokenMock;
   let tx;  // last transaction
+  let alice;
+  let bob;
+  let carol;
 
   before(async function () {
-    [owner, otherAccount] = await ethers.getSigners();
+    [owner, feeTreasury, otherAccount, alice, bob, carol] = await ethers.getSigners();
     NarfexMock = await ethers.getContractFactory("NarfexMock");
     MasterChef = await ethers.getContractFactory("MasterChef");
     LpTokenMock = await ethers.getContractFactory("LpTokenMock");
@@ -47,7 +51,7 @@ describe("MasterChef", function () {
     narfex.mint(owner.address, bn('10').pow(bn('18')));
 
     rewardPerBlock = bn('10');
-    masterChef = await MasterChef.deploy(narfex.address, rewardPerBlock);
+    masterChef = await MasterChef.deploy(narfex.address, rewardPerBlock, feeTreasury.address);
     await masterChef.deployed();
 
     rewardBalance = bn('100000');
@@ -70,10 +74,10 @@ describe("MasterChef", function () {
     endBlock = bn((await masterChef.endBlock()).toString());
   });
 
-    it("Account no new incoming rewards", async function () {
-      tx = await masterChef.accountNewRewards();
-      await expect(tx).to.emit(masterChef, 'NoNewRewardsAccounted');
-    });
+  it("Account no new incoming rewards", async function () {
+    tx = await masterChef.accountNewRewards();
+    await expect(tx).to.emit(masterChef, 'NoNewRewardsAccounted');
+  });
 
   it("Account new incoming rewards before endBlock", async function () {
     const newRewardsAmount = bn('105');  // should give another 10 blocks + 5 as a rest
@@ -91,14 +95,14 @@ describe("MasterChef", function () {
   });
 
   it("Account new incoming rewards after endBlock", async function () {
-    mineUpTo(endBlock.toNumber() + 1);
+    mineUpTo(endBlock.toNumber() + 1000);
     const newRewardsAmount = bn('105');  // should give another 10 blocks + 5 as a rest
     await narfex.transfer(masterChef.address, newRewardsAmount);
     tx = await masterChef.accountNewRewards();
     await expect(tx).to.emit(masterChef, 'NewRewardsAccounted').withNamedArgs({
       newRewardsAmount: newRewardsAmount,
-      newEndBlock: endBlock,
-      newRestUnallocatedRewards: bn('105'),
+      newEndBlock: bn(await ethers.provider.getBlockNumber()).add(newRewardsAmount.div(await masterChef.rewardPerBlockWithReferralPercent())),
+      newRestUnallocatedRewards: newRewardsAmount.add(rewardBalance).mod(await masterChef.rewardPerBlockWithReferralPercent()),
       newLastRewardTokenBalance: rewardBalance.add(newRewardsAmount),
       afterEndBlock: true,
     })
@@ -141,35 +145,25 @@ describe("MasterChef", function () {
     await expect (masterChef.connect(otherAccount).setEarlyHarvestCommission(50)).to.be.reverted;
   });
 
-  it("Should set referral percent", async function () {
-    await masterChef.setReferralPercent(5);
-
-    expect(await masterChef.referralPercent()).to.equal(5);
-  });
-
-  it("Should cancel referral percent from other account", async function () {
-    await expect (masterChef.connect(otherAccount).setReferralPercent(5)).to.be.reverted;
-  });
-
-  it("Should not mass update pools after endBlock", async function () {
+  it("Should mass update pools after endBlock", async function () {
     await mineUpTo(endBlock.toNumber() + 1);
-    await expect(masterChef.add(1000, lptoken.address, 0)).to.be.revertedWith('endBlock passed');
+    await masterChef.massUpdatePools()
   });
 
   it("Should mass update pools", async function () {
-    await masterChef.add(1000, lptoken.address, 0);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.massUpdatePools();
   });
 
   it("Should return pools count", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
 
     await masterChef.getPoolsCount();
     expect(await masterChef.getPoolsCount()).to.equal(1);
   });
 
   it("Should return balance of narfex", async function () {
-    const narfexLeft = await masterChef.getNarfexLeft();
+    const narfexLeft = await masterChef.getNarfexBalance();
     expect(narfexLeft).to.equal(rewardBalance);
   });
 
@@ -188,23 +182,23 @@ describe("MasterChef", function () {
   });
 
   it("Should not add same pool twice", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
-    await expect(masterChef.add(1000, lptoken.address, 1)).to.be.revertedWith('already exists');
+    await masterChef.add(1000, lptoken.address);
+    await expect(masterChef.add(1000, lptoken.address)).to.be.revertedWith('already exists');
   });
 
   it("Should cancel a new pool from other account", async function () {
     await lptoken.mint(owner.address,100000);
-    await expect (masterChef.connect(otherAccount).add(1000, lptoken.address, 1)).to.be.revertedWith('Ownable: caller is not the owner');
+    await expect (masterChef.connect(otherAccount).add(1000, lptoken.address)).to.be.revertedWith('Ownable: caller is not the owner');
   });
 
   it("Should add a new pool", async function () {
     await lptoken.mint(owner.address,100000);
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
   });
 
   it("Should add a new pool without update", async function () {
     await lptoken.mint(owner.address,100000);
-    await masterChef.add(1000, lptoken.address, 0);
+    await masterChef.add(1000, lptoken.address);
   });
 
   it("Should set reward per block", async function () {
@@ -217,7 +211,7 @@ describe("MasterChef", function () {
   });
 
   it("Should return settings", async function () {
-    await masterChef.add(1000, lptoken.address, 0);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.setRewardPerBlock(100);
     expect(await masterChef.rewardPerBlock()).to.equal(100);
 
@@ -226,22 +220,22 @@ describe("MasterChef", function () {
   });
 
   it("Should set allocPoint for pool", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
-    await masterChef.set(0, 500, 1);
+    await masterChef.add(1000, lptoken.address);
+    await masterChef.set(0, 500);
   });
 
   it("Should set allocPoint for pool without update", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
-    await masterChef.set(0, 500, 0);
+    await masterChef.add(1000, lptoken.address);
+    await masterChef.set(0, 500);
   });
 
   it("Should cancel allocPoint for pool from other account", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
-    await expect (masterChef.connect(otherAccount).set(0, 500, 1)).to.be.reverted;;
+    await masterChef.add(1000, lptoken.address);
+    await expect (masterChef.connect(otherAccount).set(0, 500)).to.be.reverted;
   });
 
   it("Should get user reward", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.getUserReward(lptoken.address, owner.address);
   });
 
@@ -249,7 +243,19 @@ describe("MasterChef", function () {
     await lptoken.allowance(owner.address, masterChef.address);
     await lptoken.approve(masterChef.address, 90);
     await lptoken.mint(owner.address, 100);
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
+    await masterChef.depositWithoutRefer(lptoken.address, 10);
+    await mine(100);
+    await masterChef.getUserReward(lptoken.address, owner.address);
+  });
+
+  it("Should get user reward even if empty pool", async function () {
+    await mineUpTo(startBlock.add(10));
+
+    await lptoken.allowance(owner.address, masterChef.address);
+    await lptoken.approve(masterChef.address, 90);
+    await lptoken.mint(owner.address, 100);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.depositWithoutRefer(lptoken.address, 10);
     await mine(100);
     await masterChef.getUserReward(lptoken.address, owner.address);
@@ -260,18 +266,18 @@ describe("MasterChef", function () {
   });
 
   it("Should return user pool size", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await lptoken.mint(owner.address, 10000);
     await masterChef.getUserPoolSize(lptoken.address, owner.address);
   });
 
   it("Should return pool user data", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.getPoolUserData(lptoken.address, owner.address);
   });
 
   it("Should update pool", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.updatePool(0);
   });
 
@@ -280,7 +286,7 @@ describe("MasterChef", function () {
     await lptoken.approve(masterChef.address, 100);
     await lptoken.mint(owner.address, 100);
     await lptoken.mint(otherAccount.address, 100);
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.depositWithoutRefer(lptoken.address, 100);
     await masterChef.updatePool(0);
   });
@@ -290,12 +296,12 @@ describe("MasterChef", function () {
     await lptoken.approve(masterChef.address, 90);
     await lptoken.mint(owner.address, 100);
     await lptoken.mint(otherAccount.address, 100);
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.depositWithoutRefer(lptoken.address, 10);
   });
 
   it("Should send harvest", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.harvest(lptoken.address);
   });
 
@@ -304,7 +310,7 @@ describe("MasterChef", function () {
     await lptoken.approve(masterChef.address, 90);
     await lptoken.mint(owner.address, 100);
     await lptoken.mint(otherAccount.address, 100);
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.deposit(lptoken.address, 10, otherAccount.address);
   });
 
@@ -312,7 +318,7 @@ describe("MasterChef", function () {
     await lptoken.allowance(owner.address, masterChef.address);
     await lptoken.approve(masterChef.address, 90);
     await lptoken.mint(otherAccount.address, 100);
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await expect (masterChef.deposit(lptoken.address, 10, otherAccount.address)).to.be.reverted;
   });
 
@@ -321,12 +327,12 @@ describe("MasterChef", function () {
     await lptoken.approve(masterChef.address, 90);
     await lptoken.mint(owner.address, 100);
     await lptoken.mint(otherAccount.address, 100);
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.deposit(lptoken.address, 0, otherAccount.address);
   });
 
   it("Should withdraw", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.withdraw(lptoken.address, 0);
   });
 
@@ -335,18 +341,50 @@ describe("MasterChef", function () {
     await lptoken.approve(masterChef.address, 90);
     await lptoken.mint(owner.address, 100);
     await lptoken.mint(otherAccount.address, 100);
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.deposit(lptoken.address, 50, otherAccount.address);
     await masterChef.withdraw(lptoken.address, 50);
   });
 
   it("Should revert too big amount", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await expect(masterChef.withdraw(lptoken.address, 1000)).to.be.revertedWith("Too big amount");
   });
 
   it("Should emergency withdraw", async function () {
-    await masterChef.add(1000, lptoken.address, 1);
+    await masterChef.add(1000, lptoken.address);
     await masterChef.emergencyWithdraw(lptoken.address);
+  });
+
+  it("Big scenario", async function () {
+    await lptoken.mint(alice.address, 10_000);
+    await lptoken.mint(bob.address, 20_000);
+    await lptoken.mint(carol.address, 30_000);
+
+    await lptoken.connect(alice).approve(masterChef.address, 10_000);
+    await lptoken.connect(bob).approve(masterChef.address, 20_000);
+    await lptoken.connect(carol).approve(masterChef.address, 30_000);
+
+    await masterChef.add(1000, lptoken.address);
+
+    await masterChef.connect(alice).depositWithoutRefer(lptoken.address, 10_000);
+    await masterChef.connect(bob).deposit(lptoken.address, 20_000, alice.address);
+    await masterChef.connect(carol).deposit(lptoken.address, 30_000, alice.address);
+
+    await mine(1000);
+
+    let aliceUserReward = await masterChef.getUserReward(lptoken.address, alice.address);
+    let bobUserReward = await masterChef.getUserReward(lptoken.address, bob.address);
+    let carolUserReward = await masterChef.getUserReward(lptoken.address, carol.address);
+    let totalUserReward = aliceUserReward.add(bobUserReward).add(carolUserReward);
+
+    // console.log("aliceUserReward", aliceUserReward.toString());
+    // console.log("bobUserReward", bobUserReward.toString());
+    // console.log("carolUserReward", carolUserReward.toString());
+    // console.log("totalReward", totalUserReward.toString());
+
+    await expect(aliceUserReward / totalUserReward).to.be.closeTo(1.0/6, 0.001);
+    await expect(bobUserReward / totalUserReward).to.be.closeTo(2.0/6, 0.001);
+    await expect(carolUserReward / totalUserReward).to.be.closeTo(3.0/6, 0.001);
   });
 });
