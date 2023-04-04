@@ -253,6 +253,14 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @param _fee The amount of commission paid
     event EarlyHarvestCommissionPaid(address indexed _feeTreasury, uint256 _fee);
 
+    /**
+     * @notice This event is emitted when the last reward token balance decreases after a transfer.
+     * @dev This event is useful for keeping track of changes in the last reward token balance.
+     * @param amount The amount by which the last reward token balance has decreased.
+     * @param lastRewardTokenBalance The last value of the balance.
+     */
+    event LastRewardTokenBalanceDecreasedAfterTransfer(uint256 amount, uint256 lastRewardTokenBalance);
+
     /// @notice Constructor for the Narfex MasterChef contract
     /// @param _rewardToken The address of the ERC20 token used for rewards (NRFX)
     /// @param _rewardPerBlock The amount of reward tokens allocated per block
@@ -465,7 +473,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         emit WithdrawNarfexByOwner(msg.sender, amount);
         
         // Transfer the withdrawn amount to the contract owner's address
-        rewardToken.safeTransfer(address(msg.sender), amount);
+        _transferNRFX(msg.sender, amount);
     }
 
     /**
@@ -536,20 +544,18 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     /// @dev Set a new reward per block amount
     function _setRewardPerBlock(uint256 newRewardPerBlock) internal {
-        uint256 oldRewardPerBlockWithReferralPercent = rewardPerBlock * (HUNDRED_PERCENTS + referralPercent) / HUNDRED_PERCENTS;
-
         accountNewRewards();
-        _massUpdatePools();
+        _massUpdatePools();  // set poolInfo.lastRewardBlock=block.number
 
+        uint256 futureRewards = futureUnallocatedRewards();
         rewardPerBlock = newRewardPerBlock;
         emit RewardPerBlockSet(newRewardPerBlock);
 
         // endBlock = currentBlock + unallocatedRewards / rewardPerBlock
         // so now we should update the endBlock since rewardPerBlock was changed
-        uint256 futureRewards = (endBlock - block.number) * oldRewardPerBlockWithReferralPercent + restUnallocatedRewards;
         uint256 _rewardPerBlockWithReferralPercent = rewardPerBlockWithReferralPercent();
         uint256 deltaBlocks = futureRewards / _rewardPerBlockWithReferralPercent;
-        endBlock += deltaBlocks;
+        endBlock = block.number + deltaBlocks;
         restUnallocatedRewards = futureRewards - deltaBlocks * _rewardPerBlockWithReferralPercent;
         emit EndBlockRecalculatedBecauseOfRewardPerBlockChange({
             newEndBlock: endBlock,
@@ -577,13 +583,17 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint256 _pid = poolId[_pairAddress];
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_user];
+
         uint256 accRewardPerShare = pool.accRewardPerShare;
         uint256 lpSupply = pool.totalDeposited;
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
             uint256 rightBlock = Math.min(block.number, endBlock);
-            uint256 blocks = rightBlock - pool.lastRewardBlock;
-            uint256 reward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
-            accRewardPerShare += reward * ACC_REWARD_PRECISION / lpSupply;
+            uint256 leftBlock = Math.max(pool.lastRewardBlock, startBlock);
+            if (rightBlock > leftBlock) {
+                uint256 blocks = rightBlock - leftBlock;
+                uint256 reward = blocks * rewardPerBlock * pool.allocPoint / totalAllocPoint;
+                accRewardPerShare += reward * ACC_REWARD_PRECISION / lpSupply;
+            }
         }
         return _calculateUserReward(user, accRewardPerShare);
     }
@@ -912,7 +922,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         if (isWithdraw && isEarlyHarvestCommission) {
             uint256 fee = earlyHarvestCommission / HUNDRED_PERCENTS;
             amountToUser = _amount - fee;
-            rewardToken.safeTransfer(feeTreasury, fee);
+            _transferNRFX(feeTreasury, fee);
             emit EarlyHarvestCommissionPaid(feeTreasury, fee);
         }
 
@@ -953,6 +963,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
         }
         if (amount > 0) {
             rewardToken.safeTransfer(to, amount);
+            lastRewardTokenBalance -= amount;
+            emit LastRewardTokenBalanceDecreasedAfterTransfer(amount, lastRewardTokenBalance);
         }
         return amount;
     }

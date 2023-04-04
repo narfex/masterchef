@@ -125,6 +125,59 @@ describe("MasterChef", function () {
     await expect (masterChef.connect(otherAccount).setHarvestInterval(3600)).to.be.reverted;
   });
 
+  it("should update the reward per block updater address", async function () {
+    const newAddress = "0x1234567890123456789012345678901234567890";
+    await masterChef.connect(owner).setRewardPerBlockUpdater(newAddress);
+    expect(await masterChef.rewardPerBlockUpdater()).to.equal(newAddress);
+  });
+
+  it("should not allow non-owner to update the reward per block updater address", async function () {
+    const newAddress = "0x1234567890123456789012345678901234567890";
+    await expect(masterChef.connect(alice).setRewardPerBlockUpdater(newAddress)).to.be.revertedWith("Ownable: caller is not the owner");
+  });
+
+  it("updates the blockchainBlocksPerDay value when called by the contract owner", async function () {
+    // Arrange
+    const newBlocksPerDay = 86400;
+    await masterChef.deployed();
+
+    // Act
+    await masterChef.setBlockchainBlocksPerDay(newBlocksPerDay);
+
+    // Assert
+    const actualBlockchainBlocksPerDay = await masterChef.blockchainBlocksPerDay();
+    expect(actualBlockchainBlocksPerDay).to.equal(newBlocksPerDay);
+  });
+
+  it("emits a BlockchainBlocksPerDayUpdated event when called by the contract owner", async function () {
+    // Arrange
+    const newBlocksPerDay = 86400;
+    await masterChef.deployed();
+
+    // Act
+    const tx = await masterChef.setBlockchainBlocksPerDay(newBlocksPerDay);
+
+    // Assert
+    await expect(tx)
+      .to.emit(masterChef, "BlockchainBlocksPerDayUpdated")
+      .withArgs(newBlocksPerDay);
+  });
+
+  it("reverts when called by a non-owner address", async function () {
+    // Arrange
+    const nonOwner = (await ethers.getSigners())[1];
+    const newBlocksPerDay = 86400;
+
+    // Act & Assert
+    await expect(
+      masterChef.connect(nonOwner).setBlockchainBlocksPerDay(newBlocksPerDay)
+    ).to.be.revertedWith("Ownable: caller is not the owner");
+
+    const actualBlockchainBlocksPerDay = await masterChef.blockchainBlocksPerDay();
+    expect(actualBlockchainBlocksPerDay).to.not.equal(newBlocksPerDay);
+  });
+
+
   it("Should set early harvest comission interval", async function () {
     await masterChef.setEarlyHarvestCommissionInterval(50);
 
@@ -357,6 +410,9 @@ describe("MasterChef", function () {
   });
 
   it("Big scenario", async function () {
+    await masterChef.setEstimationRewardPeriodDays(10);
+    await masterChef.setBlockchainBlocksPerDay(100);
+
     await lptoken.mint(alice.address, 10_000);
     await lptoken.mint(bob.address, 20_000);
     await lptoken.mint(carol.address, 30_000);
@@ -368,23 +424,159 @@ describe("MasterChef", function () {
     await masterChef.add(1000, lptoken.address);
 
     await masterChef.connect(alice).depositWithoutRefer(lptoken.address, 10_000);
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(0);
+
     await masterChef.connect(bob).deposit(lptoken.address, 20_000, alice.address);
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(rewardPerBlock);
+    await expect( await masterChef.getUserReward(lptoken.address, bob.address)).to.be.equal(0);
+
     await masterChef.connect(carol).deposit(lptoken.address, 30_000, alice.address);
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(Math.floor(
+      rewardPerBlock.toNumber() + rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000)
+    ));
+    await expect( await masterChef.getUserReward(lptoken.address, bob.address)).to.be.equal(rewardPerBlock.mul(bn(20_000)).div(bn(10_000+20_000)));
+    await expect( await masterChef.getUserReward(lptoken.address, carol.address)).to.be.equal(0);
 
-    await mine(1000);
+    let blocks = 100;
+    await mine(blocks);
 
-    let aliceUserReward = await masterChef.getUserReward(lptoken.address, alice.address);
-    let bobUserReward = await masterChef.getUserReward(lptoken.address, bob.address);
-    let carolUserReward = await masterChef.getUserReward(lptoken.address, carol.address);
-    let totalUserReward = aliceUserReward.add(bobUserReward).add(carolUserReward);
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(
+      rewardPerBlock.toNumber() +
+      Math.floor(rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000)) +
+      Math.floor(blocks * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000 + 30_000))
+    );
+    await expect( await masterChef.getUserReward(lptoken.address, bob.address)).to.be.equal(
+      Math.floor(rewardPerBlock.toNumber() * 20_000 / (10_000 + 20_000)) +
+      Math.floor(blocks * rewardPerBlock.toNumber() * 20_000 / (10_000 + 20_000 + 30_000))
+    );
+    await expect( await masterChef.getUserReward(lptoken.address, carol.address)).to.be.equal(
+      Math.floor(blocks * rewardPerBlock.toNumber() * 30_000 / (10_000 + 20_000 + 30_000))
+    );
 
-    // console.log("aliceUserReward", aliceUserReward.toString());
-    // console.log("bobUserReward", bobUserReward.toString());
-    // console.log("carolUserReward", carolUserReward.toString());
-    // console.log("totalReward", totalUserReward.toString());
 
-    await expect(aliceUserReward / totalUserReward).to.be.closeTo(1.0/6, 0.001);
-    await expect(bobUserReward / totalUserReward).to.be.closeTo(2.0/6, 0.001);
-    await expect(carolUserReward / totalUserReward).to.be.closeTo(3.0/6, 0.001);
+
+
+    let receipt = await masterChef.recalculateRewardPerBlock();
+
+    let newRewardPerBlockAfterRecalc = await masterChef.rewardPerBlock();
+    console.log("newRewardPerBlockAfterRecalc:", newRewardPerBlockAfterRecalc);
+
+    let newEndBlock = await masterChef.endBlock();
+    console.log("newEndBlock:", newEndBlock);
+
+    await expect(receipt).to.emit(masterChef, "RewardPerBlockRecalculated").withNamedArgs({
+      newRewardPerBlock: newRewardPerBlockAfterRecalc,
+    });
+
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(
+      rewardPerBlock.toNumber() +
+      Math.floor(rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000)) +
+      Math.floor((blocks+1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000 + 30_000))
+    );
+
+    console.log('\nlets spent all rewards');
+    let futureUnallocatedRewards = await masterChef.futureUnallocatedRewards();
+    console.log('futureUnallocatedRewards:', futureUnallocatedRewards);
+
+    let _blockToSpendRestOfRewards = bn(10);
+    let toSet = futureUnallocatedRewards.div(_blockToSpendRestOfRewards);
+    let blockToSpendRestOfRewards = futureUnallocatedRewards.div(toSet.mul(bn(10060)).div(bn(10000)));
+
+    console.log('_blockToSpendRestOfRewards:', _blockToSpendRestOfRewards)
+    console.log('blockToSpendRestOfRewards:', blockToSpendRestOfRewards)
+
+    console.log('new reward per block to set:', toSet);
+    let setRewardPerBlock_tx = await masterChef.setRewardPerBlock(toSet);
+
+
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(
+      Math.floor((1) * rewardPerBlock.toNumber()) +
+      Math.floor((1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000)) +
+      Math.floor((blocks+1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000 + 30_000)) +
+      Math.floor((1) * newRewardPerBlockAfterRecalc.toNumber() * 10_000 / (10_000 + 20_000 + 30_000))
+    );
+
+    // console.log('setRewardPerBlock_tx:', setRewardPerBlock_tx);
+    console.log('current blocknumber:', await ethers.provider.getBlockNumber());
+    let newRewardPerBlockToSpendAll = await masterChef.rewardPerBlock();
+    console.log("newRewardPerBlockToSpendAll:", newRewardPerBlockToSpendAll);
+    newEndBlock = await masterChef.endBlock();
+    console.log("newEndBlock:", newEndBlock);
+
+    await mine(9);
+    console.log('current blocknumber:', await ethers.provider.getBlockNumber());
+    await expect(await ethers.provider.getBlockNumber()).to.be.equal(newEndBlock.toNumber());
+
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.closeTo(Math.floor(
+      (1) * rewardPerBlock.toNumber() +
+      (1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000) +
+      (blocks+1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000 + 30_000) +
+      (1) * newRewardPerBlockAfterRecalc.toNumber() * 10_000 / (10_000 + 20_000 + 30_000) +
+      (9) * newRewardPerBlockToSpendAll.toNumber() * 10_000 / (10_000 + 20_000 + 30_000)
+    ), 1);
+
+    await mine(100);
+
+    let balanceBefore = await narfex.balanceOf(alice.address);
+    await masterChef.connect(alice).harvest(lptoken.address);
+    let balanceAfter = await narfex.balanceOf(alice.address);
+
+    await expect( balanceAfter.sub(balanceBefore)).to.be.closeTo(Math.floor(
+      (1) * rewardPerBlock.toNumber() +
+      (1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000) +
+      (blocks+1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000 + 30_000) +
+      (1) * newRewardPerBlockAfterRecalc.toNumber() * 10_000 / (10_000 + 20_000 + 30_000) +
+      (9) * newRewardPerBlockToSpendAll.toNumber() * 10_000 / (10_000 + 20_000 + 30_000)
+    ), 1);
+    await expect(await masterChef.endBlock()).to.be.equal(newEndBlock);
+
+    // no more rewards for alice
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(0)
+    await mine(1);
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(0)
+
+    // switch to "normal" rewardPerBlock
+    console.log('\nswitch to "normal" rewardPerBlock:', rewardPerBlock);
+    await masterChef.setRewardPerBlock(rewardPerBlock);
+    newEndBlock = await masterChef.endBlock();
+    console.log('newEndBlock:', newEndBlock);
+    await mineUpTo(newEndBlock.toNumber());
+    await masterChef.connect(alice).harvest(lptoken.address);
+
+    // to early so it goes to storedReward
+    await expect((await masterChef.userInfo(0, alice.address)).storedReward).to.be.equal(bn(1542));
+    await time.increase(8 * 3600);
+    await masterChef.connect(alice).harvest(lptoken.address);
+    await expect((await masterChef.userInfo(0, alice.address)).storedReward).to.be.equal(bn(0));
+
+    console.log("Alice UserInfo:", await masterChef.userInfo(0, alice.address));
+
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(0)
+
+    // check no more rewards
+    await mine(1);
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(0)
+
+    // transfer some rewards
+    await narfex.transfer(masterChef.address, 1);
+    await masterChef.accountNewRewards();
+    await expect(await masterChef.endBlock()).to.be.equal(newEndBlock); // changes nothing
+
+
+    // transfer more rewards
+    await narfex.transfer(masterChef.address, 10);
+    await masterChef.accountNewRewards();
+    await expect(await masterChef.endBlock()).to.be.equal(bn(await ethers.provider.getBlockNumber()).add(bn(1))); // scroll 1 block forward
+
+    await mineUpTo(await masterChef.endBlock());
+    await mine(10);
+
+    // transfer more rewards
+    await narfex.transfer(masterChef.address, 100);
+    await masterChef.accountNewRewards();
+    await expect(await masterChef.endBlock()).to.be.equal(bn(await ethers.provider.getBlockNumber()).add(bn(10))); // scroll +10 block forward
+
+    await mine(10);
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(18)  // 18 ~ 110 * 10000 / 60000
   });
 });
