@@ -829,10 +829,6 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
         require(user.amount >= _amount, "Too big amount");
         _harvest(_pairAddress);
-        uint256 pending = _calculateUserReward(user, pool.accRewardPerShare);
-        if (pending > 0) {
-            _rewardTransfer({user: user, _amount: pending, isWithdraw: true, _pid: _pid});
-        }
         if (_amount > 0) {
             user.amount -= _amount;
             pool.totalDeposited -= _amount;
