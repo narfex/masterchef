@@ -203,10 +203,10 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
     /// @param amount The amount of rewards the user harvested
     event Harvest(address indexed user, uint256 indexed pid, uint256 amount);
 
-    /// @notice Event emitted when a user emergency withdraws tokens from a pool
-    /// @param user The address of the user who emergency withdrew tokens
-    /// @param pid The ID of the pool the user emergency withdrew tokens from
-    /// @param amount The amount of tokens the user emergency withdrew
+    /// @notice Event emitted when a user just withdraws tokens from a pool with no rewards
+    /// @param user The address of the user who just withdrew tokens
+    /// @param pid The ID of the pool the user just withdrew tokens from
+    /// @param amount The amount of tokens the user just withdrew
     event JustWithdrawWithNoReward(address indexed user, uint256 indexed pid, uint256 amount);
 
     /// @notice Event emitted when the total allocation points of all pools are updated
