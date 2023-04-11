@@ -406,7 +406,7 @@ describe("MasterChef", function () {
 
   it("Should emergency withdraw", async function () {
     await masterChef.add(1000, lptoken.address);
-    await masterChef.emergencyWithdraw(lptoken.address);
+    await masterChef.justWithdrawWithNoReward(lptoken.address);
   });
 
   it("Big scenario", async function () {

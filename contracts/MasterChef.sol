@@ -2,12 +2,14 @@
 
 pragma solidity ^0.8.17;
 
+import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "./utils/EmergencyState.sol";
 
 interface IPancakePair {
     function balanceOf(address owner) external view returns (uint);
@@ -19,7 +21,7 @@ interface IPancakePair {
 /// @author Danil Sakhinov
 /// @author Vladimir Smelov
 /// @notice Distributes a reward from the balance instead of minting it
-contract MasterChef is Ownable, ReentrancyGuard {
+contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
     using SafeERC20 for IERC20;
 
     // User share of a pool
@@ -205,7 +207,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @param user The address of the user who emergency withdrew tokens
     /// @param pid The ID of the pool the user emergency withdrew tokens from
     /// @param amount The amount of tokens the user emergency withdrew
-    event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event JustWithdrawWithNoReward(address indexed user, uint256 indexed pid, uint256 amount);
 
     /// @notice Event emitted when the total allocation points of all pools are updated
     /// @param totalAllocPoint The new total allocation points
@@ -280,10 +282,18 @@ contract MasterChef is Ownable, ReentrancyGuard {
         feeTreasury = _feeTreasury;
     }
 
+    function pause() external onlyOwner nonReentrant {
+        _pause();
+    }
+
+    function unpause() external onlyOwner nonReentrant {
+        _unpause();
+    }
+
     /// @notice Updates the address of the reward per block updater
     /// @param _newUpdater The new address for the rewardPerBlockUpdater variable
     /// @dev Only the contract owner can call this function
-    function setRewardPerBlockUpdater(address _newUpdater) external onlyOwner {
+    function setRewardPerBlockUpdater(address _newUpdater) external onlyOwner nonReentrant {
         rewardPerBlockUpdater = _newUpdater;
         emit RewardPerBlockUpdaterUpdated(_newUpdater);
     }
@@ -291,7 +301,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @notice Updates the number of blockchain blocks per day
     /// @param _newBlocksPerDay The new value for the blockchainBlocksPerDay variable
     /// @dev Only the contract owner can call this function
-    function setBlockchainBlocksPerDay(uint256 _newBlocksPerDay) external onlyOwner {
+    function setBlockchainBlocksPerDay(uint256 _newBlocksPerDay) external onlyOwner nonReentrant {
         blockchainBlocksPerDay = _newBlocksPerDay;
         emit BlockchainBlocksPerDayUpdated(_newBlocksPerDay);
     }
@@ -299,7 +309,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @notice Updates the number of estimation reward period days
     /// @param _newRewardPeriodDays The new value for the estimationRewardPeriodDays variable
     /// @dev Only the contract owner can call this function
-    function setEstimationRewardPeriodDays(uint256 _newRewardPeriodDays) external onlyOwner {
+    function setEstimationRewardPeriodDays(uint256 _newRewardPeriodDays) external onlyOwner nonReentrant {
         estimationRewardPeriodDays = _newRewardPeriodDays;
         emit EstimationRewardPeriodDaysUpdated(_newRewardPeriodDays);
     }
@@ -307,7 +317,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @notice Updates the address of the fee treasury
     /// @param _newTreasury The new address for the feeTreasury variable
     /// @dev Only the contract owner can call this function
-    function setFeeTreasury(address _newTreasury) external onlyOwner {
+    function setFeeTreasury(address _newTreasury) external onlyOwner nonReentrant {
         require(_newTreasury != address(0), "Invalid address provided.");
         feeTreasury = _newTreasury;
         emit FeeTreasuryUpdated(_newTreasury);
@@ -315,12 +325,12 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     /// @notice Recalculates the reward per block based on the unallocated rewards and estimation reward period days
     /// @dev This function can be called by either the contract owner or rewardPerBlockUpdater
-    function recalculateRewardPerBlock() external {
+    function recalculateRewardPerBlock() external nonReentrant {
         require(msg.sender == owner() || msg.sender == rewardPerBlockUpdater, "no access");
         require(estimationRewardPeriodDays != 0, "estimationRewardPeriodDays is zero");
         require(blockchainBlocksPerDay != 0, "blockchainBlocksPerDay is zero");
 
-        accountNewRewards();
+        _accountNewRewards();
         _massUpdatePools();
 
         uint256 _futureUnallocatedRewards = futureUnallocatedRewards();
@@ -339,7 +349,11 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /**
      * @notice Account new rewards from the reward pool. This function can be called periodically by anyone to distribute new rewards to the reward pool.
      */
-    function accountNewRewards() public {
+    function accountNewRewards() external nonReentrant {
+        _accountNewRewards();
+    }
+
+    function _accountNewRewards() internal {
         uint256 currentBalance = getNarfexBalance();
         uint256 newRewardsAmount = currentBalance - lastRewardTokenBalance;
         if (newRewardsAmount == 0) {
@@ -456,7 +470,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         require(amount > 0, "zero amount");
         require(amount <= getNarfexBalance(), "Not enough reward tokens left");
 
-        accountNewRewards();
+        _accountNewRewards();
 
         // Calculate the remaining rewards
         uint256 _futureUnallocatedRewards = futureUnallocatedRewards();
@@ -544,7 +558,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     /// @dev Set a new reward per block amount
     function _setRewardPerBlock(uint256 newRewardPerBlock) internal {
-        accountNewRewards();
+        _accountNewRewards();
         _massUpdatePools();  // set poolInfo.lastRewardBlock=block.number
 
         uint256 futureRewards = futureUnallocatedRewards();
@@ -720,7 +734,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
      * @dev Only one call to this function can be made at a time
      */
     function massUpdatePools() external nonReentrant {
-        accountNewRewards();
+        _accountNewRewards();
         _massUpdatePools();
     }
 
@@ -739,7 +753,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @notice Update reward variables of the given pool to be up-to-date
     /// @param _pid Pool index
     function updatePool(uint256 _pid) external nonReentrant {
-        accountNewRewards();
+        _accountNewRewards();
         _updatePool(_pid);
     }
 
@@ -782,8 +796,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @param _pairAddress The address of LP token
     /// @param _amount Amount of LP tokens to deposit
     /// @param _referral Address of the agent who invited the user
-    function deposit(address _pairAddress, uint256 _amount, address _referral) public onlyExistPool(_pairAddress) nonReentrant {
-        accountNewRewards();
+    function deposit(address _pairAddress, uint256 _amount, address _referral) public onlyExistPool(_pairAddress) nonReentrant whenNotPaused notEmergency {
+        _accountNewRewards();
         uint256 _pid = poolId[_pairAddress];
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
@@ -820,8 +834,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @notice Withdraw LP tokens from the farm. It will try to harvest first
     /// @param _pairAddress The address of LP token
     /// @param _amount Amount of LP tokens to withdraw
-    function withdraw(address _pairAddress, uint256 _amount) public nonReentrant onlyExistPool(_pairAddress) {
-        accountNewRewards();
+    function withdraw(address _pairAddress, uint256 _amount) public nonReentrant onlyExistPool(_pairAddress) whenNotPaused notEmergency {
+        _accountNewRewards();
         uint256 _pid = poolId[_pairAddress];
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
@@ -840,15 +854,16 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     /// @notice Returns LP tokens to the user with the entire reward reset to zero
     /// @param _pairAddress The address of LP token
-    function emergencyWithdraw(address _pairAddress) public {
+    function justWithdrawWithNoReward(address _pairAddress) public nonReentrant onlyExistPool(_pairAddress) {
         uint256 _pid = poolId[_pairAddress];
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        pool.pairToken.safeTransfer(address(msg.sender), user.amount);
-        emit EmergencyWithdraw(msg.sender, _pid, user.amount);
+        uint256 amount = user.amount;
         user.amount = 0;
         user.withdrawnReward = 0;
         user.storedReward = 0;
+        pool.pairToken.safeTransfer(address(msg.sender), amount);
+        emit JustWithdrawWithNoReward(msg.sender, _pid, amount);
     }
 
     /// @notice Harvest rewards for the given pool and transfer them to the user's address.
@@ -867,7 +882,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     
     /// @notice Harvest reward from the pool and send to the user
     /// @param _pairAddress The address of LP token
-    function harvest(address _pairAddress) public onlyExistPool(_pairAddress) {
+    function harvest(address _pairAddress) public onlyExistPool(_pairAddress) whenNotPaused notEmergency nonReentrant {
         _harvest(_pairAddress);
     }
 
@@ -883,7 +898,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
     /// @notice Recover any token accidentally sent to the contract (does not allow recover deposited LP and reward tokens)
     /// @param token Token to recover
     /// @param to Where to send recovered tokens
-    function recoverERC20(address token, address to, uint256 amount) public onlyOwner nonReentrant {
+    /// @param amount Amount to send
+    function recoverERC20(address token, address to, uint256 amount) external onlyOwner nonReentrant {
         require(token != address(rewardToken), "cannot recover reward token");
         if (poolExists(token)) {
             PoolInfo storage pool = poolInfo[poolId[token]];
@@ -893,6 +909,13 @@ contract MasterChef is Ownable, ReentrancyGuard {
         } else {
             IERC20(token).safeTransfer(to, amount);
         }
+    }
+
+    /// @notice Recover reward token in case of emergency
+    /// @param to Where to send recovered tokens
+    /// @param amount Amount to send
+    function emergencyRecoverReward(address to, uint256 amount) external onlyOwner nonReentrant onlyEmergency {
+        IERC20(rewardToken).safeTransfer(to, amount);
     }
 
     /// @notice Transfer reward with all checks
