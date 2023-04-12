@@ -19,10 +19,13 @@ function bn(value) {
 
 
 describe("MasterChef", function () {
+  const ONE = bn(10).pow(bn(18));
+
   // initialized in beforeEach
   let narfex;
   let masterChef;
   let rewardPerBlock;
+  let rewardPerBlockWithReferralPercent;
   let rewardBalance;
   let startBlock;
   let endBlock;
@@ -48,26 +51,27 @@ describe("MasterChef", function () {
   beforeEach(async function () {
     narfex = await NarfexMock.deploy();
     narfex.deployed();
-    narfex.mint(owner.address, bn('10').pow(bn('18')));
+    narfex.mint(owner.address, bn('1000').mul(ONE));
 
-    rewardPerBlock = bn('10');
+    rewardPerBlock = ONE.div(bn('1000'));
     masterChef = await MasterChef.deploy(narfex.address, rewardPerBlock, feeTreasury.address);
     await masterChef.deployed();
+    rewardPerBlockWithReferralPercent = await masterChef.rewardPerBlockWithReferralPercent();
 
-    rewardBalance = bn('100000');
+    rewardBalance = ONE;
     await narfex.transfer(masterChef.address, rewardBalance.toString());
     tx = await masterChef.accountNewRewards();
     startBlock = bn((await masterChef.startBlock()).toString());
-    const expectedEndBlock = startBlock.add(rewardBalance.div(rewardPerBlock))
+    const expectedEndBlock = startBlock.add(rewardBalance.div(rewardPerBlockWithReferralPercent))
     await expect(tx).to.emit(masterChef, 'NewRewardsAccounted').withNamedArgs({
       newRewardsAmount: rewardBalance,
       newEndBlock: expectedEndBlock.toString(),
-      newRestUnallocatedRewards: bn('0'),
+      newRestUnallocatedRewards: rewardBalance.mod(rewardPerBlockWithReferralPercent),
       newLastRewardTokenBalance: rewardBalance,
       afterEndBlock: false,
     })
     expect(await masterChef.endBlock()).equal(expectedEndBlock.toString());
-    expect(await masterChef.restUnallocatedRewards()).equal('0');
+    expect(await masterChef.restUnallocatedRewards()).equal(rewardBalance.mod(rewardPerBlockWithReferralPercent));
 
     lptoken = await LpTokenMock.deploy();
     await lptoken.deployed();
@@ -80,29 +84,30 @@ describe("MasterChef", function () {
   });
 
   it("Account new incoming rewards before endBlock", async function () {
-    const newRewardsAmount = bn('105');  // should give another 10 blocks + 5 as a rest
+    const oldRestUnallocatedRewards = await masterChef.restUnallocatedRewards();
+    const newRewardsAmount = rewardPerBlockWithReferralPercent.mul(10).add(5);  // should give another 10 blocks + 5 as a rest
     await narfex.transfer(masterChef.address, newRewardsAmount);
     tx = await masterChef.accountNewRewards();
     await expect(tx).to.emit(masterChef, 'NewRewardsAccounted').withNamedArgs({
       newRewardsAmount: newRewardsAmount,
       newEndBlock: endBlock.add(bn('10')).toString(),
-      newRestUnallocatedRewards: bn('5'),
+      newRestUnallocatedRewards: oldRestUnallocatedRewards.add('5'),
       newLastRewardTokenBalance: rewardBalance.add(newRewardsAmount),
       afterEndBlock: false,
     })
     expect(await masterChef.endBlock()).equal(endBlock.add(bn(10)));
-    expect(await masterChef.restUnallocatedRewards()).equal('5');
+    expect(await masterChef.restUnallocatedRewards()).equal(oldRestUnallocatedRewards.add('5'));
   });
 
   it("Account new incoming rewards after endBlock", async function () {
     mineUpTo(endBlock.toNumber() + 1000);
-    const newRewardsAmount = bn('105');  // should give another 10 blocks + 5 as a rest
+    const newRewardsAmount = rewardPerBlockWithReferralPercent.mul(10).add(5);  // should give another 10 blocks + 5 as a rest
     await narfex.transfer(masterChef.address, newRewardsAmount);
     tx = await masterChef.accountNewRewards();
     await expect(tx).to.emit(masterChef, 'NewRewardsAccounted').withNamedArgs({
       newRewardsAmount: newRewardsAmount,
-      newEndBlock: bn(await ethers.provider.getBlockNumber()).add(newRewardsAmount.div(await masterChef.rewardPerBlockWithReferralPercent())),
-      newRestUnallocatedRewards: newRewardsAmount.add(rewardBalance).mod(await masterChef.rewardPerBlockWithReferralPercent()),
+      newEndBlock: bn(await ethers.provider.getBlockNumber()).add(newRewardsAmount.div(rewardPerBlockWithReferralPercent)),
+      newRestUnallocatedRewards: newRewardsAmount.add(rewardBalance).mod(rewardPerBlockWithReferralPercent),
       newLastRewardTokenBalance: rewardBalance.add(newRewardsAmount),
       afterEndBlock: true,
     })
@@ -112,9 +117,7 @@ describe("MasterChef", function () {
     await narfex.mint(owner.address, 100);
     await narfex.allowance(owner.address, lptoken.address);
     await narfex.approve(lptoken.address, 90);
-
     await masterChef.setHarvestInterval(3600);
-
     expect(await masterChef.harvestInterval()).to.equal(3600);
   });
 
@@ -225,11 +228,6 @@ describe("MasterChef", function () {
     await masterChef.withdrawNarfexByOwner(10);
   });
 
-  // it("Should withdraw narfex after endBlock", async function () {
-  //   await mineUpTo(endBlock.add(10).toNumber());
-  //   await masterChef.withdrawNarfexByOwner(1);
-  // });
-
   it("Should cancel withdraw narfex from other account", async function () {
     await expect (masterChef.connect(otherAccount).withdrawNarfexByOwner(10)).to.be.reverted;
   });
@@ -314,7 +312,7 @@ describe("MasterChef", function () {
     await masterChef.getUserReward(lptoken.address, owner.address);
   });
 
-  it("Should cancer get user reward", async function () {
+  it("Should cancel get user reward", async function () {
     await expect (masterChef.getUserReward(lptoken.address, owner.address)).to.be.reverted;
   });
 
@@ -437,24 +435,21 @@ describe("MasterChef", function () {
     await expect( await masterChef.getUserReward(lptoken.address, bob.address)).to.be.equal(rewardPerBlock.mul(bn(20_000)).div(bn(10_000+20_000)));
     await expect( await masterChef.getUserReward(lptoken.address, carol.address)).to.be.equal(0);
 
-    let blocks = 100;
+    let blocks = bn(100);
     await mine(blocks);
 
     await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(
-      rewardPerBlock.toNumber() +
-      Math.floor(rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000)) +
-      Math.floor(blocks * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000 + 30_000))
+      rewardPerBlock.add(
+      rewardPerBlock.mul(10_000).div(10_000+20_000)).add(
+      blocks.mul(rewardPerBlock).mul(10_000).div(10_000 + 20_000 + 30_000))
     );
     await expect( await masterChef.getUserReward(lptoken.address, bob.address)).to.be.equal(
-      Math.floor(rewardPerBlock.toNumber() * 20_000 / (10_000 + 20_000)) +
-      Math.floor(blocks * rewardPerBlock.toNumber() * 20_000 / (10_000 + 20_000 + 30_000))
-    );
+      rewardPerBlock.mul(20_000).div(10_000 + 20_000).add(
+      blocks.mul(rewardPerBlock).mul(20_000).div(10_000 + 20_000 + 30_000))
+    )
     await expect( await masterChef.getUserReward(lptoken.address, carol.address)).to.be.equal(
-      Math.floor(blocks * rewardPerBlock.toNumber() * 30_000 / (10_000 + 20_000 + 30_000))
+      blocks.mul(rewardPerBlock).mul(30_000).div(10_000 + 20_000 + 30_000)
     );
-
-
-
 
     let receipt = await masterChef.recalculateRewardPerBlock();
 
@@ -469,9 +464,9 @@ describe("MasterChef", function () {
     });
 
     await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(
-      rewardPerBlock.toNumber() +
-      Math.floor(rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000)) +
-      Math.floor((blocks+1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000 + 30_000))
+      rewardPerBlock.add(
+      rewardPerBlock.mul(10_000).div(10_000 + 20_000)).add(
+      blocks.add(1).mul(rewardPerBlock).mul(10_000).div(10_000 + 20_000 + 30_000))
     );
 
     console.log('\nlets spent all rewards');
@@ -480,7 +475,7 @@ describe("MasterChef", function () {
 
     let _blockToSpendRestOfRewards = bn(10);
     let toSet = futureUnallocatedRewards.div(_blockToSpendRestOfRewards);
-    let blockToSpendRestOfRewards = futureUnallocatedRewards.div(toSet.mul(bn(10060)).div(bn(10000)));
+    let blockToSpendRestOfRewards = futureUnallocatedRewards.div(toSet.mul(10060).div(10000));
 
     console.log('_blockToSpendRestOfRewards:', _blockToSpendRestOfRewards)
     console.log('blockToSpendRestOfRewards:', blockToSpendRestOfRewards)
@@ -488,12 +483,11 @@ describe("MasterChef", function () {
     console.log('new reward per block to set:', toSet);
     let setRewardPerBlock_tx = await masterChef.setRewardPerBlock(toSet);
 
-
-    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(
-      Math.floor((1) * rewardPerBlock.toNumber()) +
-      Math.floor((1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000)) +
-      Math.floor((blocks+1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000 + 30_000)) +
-      Math.floor((1) * newRewardPerBlockAfterRecalc.toNumber() * 10_000 / (10_000 + 20_000 + 30_000))
+    await expect(await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(
+      bn(1).mul(rewardPerBlock)
+        .add(bn(1).mul(rewardPerBlock).mul(10_000).div(10_000 + 20_000))
+        .add(blocks.add(1).mul(rewardPerBlock).mul(10_000).div(10_000 + 20_000 + 30_000))
+        .add(bn(1).mul(newRewardPerBlockAfterRecalc).mul(10_000).div(10_000 + 20_000 + 30_000))
     );
 
     // console.log('setRewardPerBlock_tx:', setRewardPerBlock_tx);
@@ -507,13 +501,13 @@ describe("MasterChef", function () {
     console.log('current blocknumber:', await ethers.provider.getBlockNumber());
     await expect(await ethers.provider.getBlockNumber()).to.be.equal(newEndBlock.toNumber());
 
-    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.closeTo(Math.floor(
-      (1) * rewardPerBlock.toNumber() +
-      (1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000) +
-      (blocks+1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000 + 30_000) +
-      (1) * newRewardPerBlockAfterRecalc.toNumber() * 10_000 / (10_000 + 20_000 + 30_000) +
-      (9) * newRewardPerBlockToSpendAll.toNumber() * 10_000 / (10_000 + 20_000 + 30_000)
-    ), 1);
+    await expect(await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(
+      bn(1).mul(rewardPerBlock)
+        .add(bn(1).mul(rewardPerBlock).mul(10_000).div(10_000 + 20_000))
+        .add(blocks.add(1).mul(rewardPerBlock).mul(10_000).div(10_000 + 20_000 + 30_000))
+        .add(bn(1).mul(newRewardPerBlockAfterRecalc).mul(10_000).div(10_000 + 20_000 + 30_000))
+        .add(bn(9).mul(newRewardPerBlockToSpendAll).mul(10_000).div(10_000 + 20_000 + 30_000))
+    );
 
     await mine(100);
 
@@ -521,13 +515,13 @@ describe("MasterChef", function () {
     await masterChef.connect(alice).harvest(lptoken.address);
     let balanceAfter = await narfex.balanceOf(alice.address);
 
-    await expect( balanceAfter.sub(balanceBefore)).to.be.closeTo(Math.floor(
-      (1) * rewardPerBlock.toNumber() +
-      (1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000) +
-      (blocks+1) * rewardPerBlock.toNumber() * 10_000 / (10_000 + 20_000 + 30_000) +
-      (1) * newRewardPerBlockAfterRecalc.toNumber() * 10_000 / (10_000 + 20_000 + 30_000) +
-      (9) * newRewardPerBlockToSpendAll.toNumber() * 10_000 / (10_000 + 20_000 + 30_000)
-    ), 1);
+    await expect( balanceAfter.sub(balanceBefore)).to.be.closeTo(
+      bn(1).mul(rewardPerBlock)
+        .add(bn(1).mul(rewardPerBlock).mul(10_000).div(10_000 + 20_000))
+        .add(blocks.add(1).mul(rewardPerBlock).mul(10_000).div(10_000 + 20_000 + 30_000))
+        .add(bn(1).mul(newRewardPerBlockAfterRecalc).mul(10_000).div(10_000 + 20_000 + 30_000))
+        .add(bn(9).mul(newRewardPerBlockToSpendAll).mul(10_000).div(10_000 + 20_000 + 30_000))
+    , 1);
     await expect(await masterChef.endBlock()).to.be.equal(newEndBlock);
 
     // no more rewards for alice
@@ -544,7 +538,7 @@ describe("MasterChef", function () {
     await masterChef.connect(alice).harvest(lptoken.address);
 
     // to early so it goes to storedReward
-    await expect((await masterChef.userInfo(0, alice.address)).storedReward).to.be.equal(bn(1542));
+    await expect((await masterChef.userInfo(0, alice.address)).storedReward).to.be.equal(bn('13666666666666667'));
     await time.increase(8 * 3600);
     await masterChef.connect(alice).harvest(lptoken.address);
     await expect((await masterChef.userInfo(0, alice.address)).storedReward).to.be.equal(bn(0));
@@ -564,7 +558,7 @@ describe("MasterChef", function () {
 
 
     // transfer more rewards
-    await narfex.transfer(masterChef.address, 10);
+    await narfex.transfer(masterChef.address, rewardPerBlockWithReferralPercent);
     await masterChef.accountNewRewards();
     await expect(await masterChef.endBlock()).to.be.equal(bn(await ethers.provider.getBlockNumber()).add(bn(1))); // scroll 1 block forward
 
@@ -572,11 +566,68 @@ describe("MasterChef", function () {
     await mine(10);
 
     // transfer more rewards
-    await narfex.transfer(masterChef.address, 100);
+    await narfex.transfer(masterChef.address, rewardPerBlockWithReferralPercent.mul(10));
     await masterChef.accountNewRewards();
     await expect(await masterChef.endBlock()).to.be.equal(bn(await ethers.provider.getBlockNumber()).add(bn(10))); // scroll +10 block forward
 
     await mine(10);
-    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(18)  // 18 ~ 110 * 10000 / 60000
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal('1833333333333333')  // 18 ~ 110 * 10000 / 60000
+  });
+
+  it("Referral reward transferred", async function () {
+    await masterChef.add(1000, lptoken.address);
+
+    await lptoken.mint(bob.address, 20_000);
+    await lptoken.connect(bob).approve(masterChef.address, 20_000);
+    await masterChef.connect(bob).deposit(lptoken.address, 20_000, alice.address);
+
+    let blocks = 100;
+    await mine(blocks);
+    let expectedBobReward = rewardPerBlock.mul(bn(blocks));
+    let expectedAliceReward = expectedBobReward.mul(await masterChef.referralPercent()).div(await masterChef.HUNDRED_PERCENTS());
+    const balanceOfAliceBefore = await narfex.balanceOf(alice.address);
+    const balanceOfBobBefore = await narfex.balanceOf(bob.address);
+    await expect( await masterChef.getUserReward(lptoken.address, bob.address)).to.be.equal(expectedBobReward);
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(0);
+
+    await masterChef.connect(bob).harvest(lptoken.address);  // plus 1 block
+
+    const balanceOfAliceAfter = await narfex.balanceOf(alice.address);
+    const balanceOfBobAfter = await narfex.balanceOf(bob.address);
+
+    expectedBobReward = rewardPerBlock.mul(bn(blocks).add(1));
+    expectedAliceReward = expectedBobReward.mul(await masterChef.referralPercent()).div(await masterChef.HUNDRED_PERCENTS());
+
+    await expect(balanceOfAliceAfter.sub(balanceOfAliceBefore)).to.be.equal(expectedAliceReward);
+    await expect(balanceOfBobAfter.sub(balanceOfBobBefore)).to.be.equal(expectedBobReward);
+  });
+
+  it("Dry season", async function () {
+    await lptoken.mint(alice.address, 10_000);
+    await lptoken.mint(bob.address, 20_000);
+    await lptoken.connect(alice).approve(masterChef.address, 10_000);
+    await lptoken.connect(bob).approve(masterChef.address, 20_000);
+    await masterChef.add(1000, lptoken.address);
+
+    await masterChef.connect(alice).depositWithoutRefer(lptoken.address, 10_000);
+
+    await mineUpTo(await masterChef.endBlock());
+    await mine(100);
+
+    await masterChef.connect(alice).harvest(lptoken.address);
+    // join after endBlock
+    await masterChef.connect(bob).deposit(lptoken.address, 20_000, alice.address);
+
+    await mine(100);
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(0);
+    await expect( await masterChef.getUserReward(lptoken.address, bob.address)).to.be.equal(0);
+    // no new rewards
+
+    await narfex.transfer(masterChef.address, rewardPerBlockWithReferralPercent.mul(1000));
+    await masterChef.accountNewRewards();
+    await mine(100);
+
+    await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(rewardPerBlock.mul(100).mul(10_000).div(10_000 + 20_000));
+    await expect( await masterChef.getUserReward(lptoken.address, bob.address)).to.be.equal(rewardPerBlock.mul(100).mul(20_000).div(10_000 + 20_000));
   });
 });
