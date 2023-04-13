@@ -10,6 +10,7 @@ const assert = require('assert');
 const { ethers } = require("hardhat");
 const { mineUpTo, mine } = require("@nomicfoundation/hardhat-network-helpers");
 const {BigNumber} = require("ethers");
+const {ZERO_ADDRESS} = require("@openzeppelin/test-helpers/src/constants");
 require("chai-bignumber")(BigNumber);
 
 
@@ -35,23 +36,40 @@ describe("MasterChef", function () {
   let lptoken;
   let NarfexMock;
   let MasterChef;
+  let ERC20Mock;
   let LpTokenMock;
   let tx;  // last transaction
   let alice;
   let bob;
   let carol;
+  let erc20Token;
+  let token0;
+  let token1;
 
   before(async function () {
     [owner, feeTreasury, otherAccount, alice, bob, carol] = await ethers.getSigners();
     NarfexMock = await ethers.getContractFactory("NarfexMock");
+    ERC20Mock = await ethers.getContractFactory("ERC20Mock");
     MasterChef = await ethers.getContractFactory("MasterChef");
     LpTokenMock = await ethers.getContractFactory("LpTokenMock");
   });
 
   beforeEach(async function () {
     narfex = await NarfexMock.deploy();
-    narfex.deployed();
+    await narfex.deployed();
     narfex.mint(owner.address, bn('1000').mul(ONE));
+
+    erc20Token = await ERC20Mock.deploy("TEST", "TEST");  // other erc20 token
+    await erc20Token.deployed();
+
+    token0 = await ERC20Mock.deploy("token0", "token0");
+    await token0.deployed();
+
+    token1 = await ERC20Mock.deploy("token1", "token1");
+    await token1.deployed();
+
+    lptoken = await LpTokenMock.deploy(token0.address, token1.address);
+    await lptoken.deployed();
 
     rewardPerBlock = ONE.div(bn('1000'));
     masterChef = await MasterChef.deploy(narfex.address, rewardPerBlock, feeTreasury.address);
@@ -73,9 +91,90 @@ describe("MasterChef", function () {
     expect(await masterChef.endBlock()).equal(expectedEndBlock.toString());
     expect(await masterChef.restUnallocatedRewards()).equal(rewardBalance.mod(rewardPerBlockWithReferralPercent));
 
-    lptoken = await LpTokenMock.deploy();
-    await lptoken.deployed();
     endBlock = bn((await masterChef.endBlock()).toString());
+  });
+
+  describe("Pausable", () => {
+    it("should only allow owner to call pause", async () => {
+      await expect(masterChef.connect(otherAccount).pause()).to.be.revertedWith("Ownable: caller is not the owner");
+      await expect(masterChef.connect(owner).pause()).to.emit(masterChef, "Paused");
+    });
+
+    it("should only allow owner to call unpause", async () => {
+      await masterChef.connect(owner).pause();
+      await expect(masterChef.connect(otherAccount).unpause()).to.be.revertedWith("Ownable: caller is not the owner");
+      await expect(masterChef.connect(owner).unpause()).to.emit(masterChef, "Unpaused");
+    });
+
+    it("should not allow deposit, withdraw and harvest when paused", async () => {
+      await masterChef.connect(owner).pause();
+      await masterChef.add(1000, lptoken.address);
+
+      await expect(masterChef.connect(alice).depositWithoutRefer(lptoken.address, ONE)).to.be.revertedWith("Pausable: paused");
+      await expect(masterChef.connect(alice).withdraw(lptoken.address, ONE)).to.be.revertedWith("Pausable: paused");
+      await expect(masterChef.connect(alice).harvest(lptoken.address)).to.be.revertedWith("Pausable: paused");
+    });
+  });
+
+  describe("EmergencyState", () => {
+    it("should be in normal state by default", async () => {
+      const state = await masterChef.emergencyState();
+      expect(state).to.equal(0);
+    });
+
+    it("should change state to EMERGENCY_FOREVER", async () => {
+      await masterChef.connect(owner).setEmergencyState(2);
+      const state = await masterChef.emergencyState();
+      expect(state).to.equal(2);
+    });
+
+    it("should revert if trying to change state when in NORMAL_FOREVER", async () => {
+      await masterChef.connect(owner).setEmergencyState(1);
+      await expect(masterChef.connect(owner).setEmergencyState(2)).to.be.revertedWith(
+        "EmergencyState: cannot change forever state"
+      );
+    });
+
+    it("should revert if not owner tries to change state", async () => {
+      await expect(masterChef.connect(alice).setEmergencyState(2)).to.be.revertedWith(
+        "Ownable: caller is not the owner"
+      );
+    });
+
+    it("should revert if trying to set state to NORMAL", async () => {
+      await expect(masterChef.connect(owner).setEmergencyState(0)).to.be.revertedWith(
+        "EmergencyState: cannot set normal state"
+      );
+    });
+
+    it("should revert when calling emergencyRecoverReward if emergency state is not active", async () => {
+      // Ensure the state is not EMERGENCY_FOREVER
+      const state = await masterChef.emergencyState();
+      expect(state).to.not.equal(2);
+
+      // Try to call emergencyRecoverReward
+      await expect(
+        masterChef.connect(owner).emergencyRecoverReward(alice.address, ethers.utils.parseEther("1"))
+      ).to.be.revertedWith("EmergencyState: emergency state is not active");
+    });
+
+    it("should successfully call emergencyRecoverReward when emergency state is active", async () => {
+      // Set the state to EMERGENCY_FOREVER
+      await masterChef.connect(owner).setEmergencyState(2);
+
+      // Check initial balance
+      const initialBalance = await narfex.balanceOf(alice.address);
+
+      // Transfer rewards in case of emergency
+      const amountToSend = ethers.utils.parseEther("1");
+      await masterChef.connect(owner).emergencyRecoverReward(alice.address, amountToSend);
+
+      // Check new balance
+      const newBalance = await narfex.balanceOf(alice.address);
+
+      // Verify that the new balance is equal to the initial balance plus the sent amount
+      expect(newBalance.sub(initialBalance)).to.equal(amountToSend);
+    });
   });
 
   it("Account no new incoming rewards", async function () {
@@ -629,5 +728,127 @@ describe("MasterChef", function () {
 
     await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(rewardPerBlock.mul(100).mul(10_000).div(10_000 + 20_000));
     await expect( await masterChef.getUserReward(lptoken.address, bob.address)).to.be.equal(rewardPerBlock.mul(100).mul(20_000).div(10_000 + 20_000));
+  });
+
+  it("should accumulate rewards on multiple deposits", async () => {
+    await lptoken.mint(alice.address, 5_000);
+    await lptoken.connect(alice).approve(masterChef.address, 5_000);
+    await masterChef.add(1000, lptoken.address);
+
+    await masterChef.connect(alice).depositWithoutRefer(lptoken.address, 2_000);
+
+    await mine(9);
+    const expectedReward = rewardPerBlock.mul(10);
+    const balanceOfAliceBefore = await narfex.balanceOf(alice.address);
+    await masterChef.connect(alice).depositWithoutRefer(lptoken.address, 3_000);
+    const balanceOfAliceAfter = await narfex.balanceOf(alice.address);
+    expect(balanceOfAliceAfter.sub(balanceOfAliceBefore)).to.be.equal(expectedReward);
+  });
+
+  it("should recover ERC20 tokens and emit Recovered event", async () => {
+    const [owner, recipient, other] = await ethers.getSigners();
+    const tokenAmount = ethers.utils.parseUnits("1", 18);
+
+    await erc20Token.mint(masterChef.address, tokenAmount);
+
+    // Recover token when it's not a reward or pool token
+    await expect(masterChef.connect(owner).recoverERC20(erc20Token.address, recipient.address, tokenAmount))
+      .to.emit(masterChef, "Recovered")
+      .withArgs(erc20Token.address, recipient.address, tokenAmount);
+
+    expect(await erc20Token.balanceOf(recipient.address)).to.be.equal(tokenAmount);
+
+    // Recover token when it's a pool token, but not reward token
+    await masterChef.add(1000, erc20Token.address);
+    await erc20Token.mint(masterChef.address, tokenAmount);
+
+    await expect(masterChef.connect(owner).recoverERC20(erc20Token.address, other.address, tokenAmount))
+      .to.emit(masterChef, "Recovered")
+      .withArgs(erc20Token.address, other.address, tokenAmount);
+
+    expect(await erc20Token.balanceOf(other.address)).to.be.equal(tokenAmount);
+
+    // Fail when trying to recover reward token
+    await expect(masterChef.connect(owner).recoverERC20(narfex.address, recipient.address, tokenAmount))
+      .to.be.revertedWith("cannot recover reward token");
+  });
+
+  it("should set the fee treasury and emit FeeTreasuryUpdated event", async () => {
+    const newTreasury = alice;
+
+    await expect(masterChef.connect(owner).setFeeTreasury(newTreasury.address))
+      .to.emit(masterChef, "FeeTreasuryUpdated")
+      .withArgs(newTreasury.address);
+
+    expect(await masterChef.feeTreasury()).to.be.equal(newTreasury.address);
+
+    // Revert if invalid address is provided
+    await expect(masterChef.connect(owner).setFeeTreasury(ethers.constants.AddressZero))
+      .to.be.revertedWith("Invalid address provided.");
+  });
+
+  it("should return pool data for a given pool address", async () => {
+    const allocPoint = 1000;
+    await masterChef.add(allocPoint, lptoken.address);
+
+    const depositAmount = ethers.utils.parseUnits("10", 18);
+    await lptoken.mint(alice.address, depositAmount);
+    await lptoken.connect(alice).approve(masterChef.address, depositAmount);
+    await masterChef.connect(alice).depositWithoutRefer(lptoken.address, depositAmount);
+
+    const poolData = await masterChef.getPoolData(lptoken.address);
+    const token0 = await lptoken.token0();
+    const token1 = await lptoken.token1();
+    const token0Contract = await ethers.getContractAt("IERC20Metadata", token0);
+    const token1Contract = await ethers.getContractAt("IERC20Metadata", token1);
+
+    expect(poolData.token0).to.equal(token0);
+    expect(poolData.token1).to.equal(token1);
+    expect(poolData.token0symbol).to.equal(await token0Contract.symbol());
+    expect(poolData.token1symbol).to.equal(await token1Contract.symbol());
+    expect(poolData.totalDeposited).to.equal(depositAmount);
+    expect(poolData.poolShare).to.equal(allocPoint * 10000 / (await masterChef.totalAllocPoint()));
+
+    // Revert if pool does not exist
+    await expect(masterChef.getPoolData(ethers.constants.AddressZero))
+      .to.be.revertedWith("pool not exist");
+  });
+
+  describe("Pool exist", () => {
+    it("Should return false if no pools exist", async () => {
+      const nonExistentPairAddress = "0x1111111111111111111111111111111111111111";
+      const poolExists = await masterChef.poolExists(nonExistentPairAddress);
+      expect(poolExists).to.be.false;
+    });
+
+    it("Should return true for an existing pool with poolId 0", async () => {
+      const pairAddress = "0x2222222222222222222222222222222222222222";
+      await masterChef.add(1000, pairAddress);
+
+      const poolExists = await masterChef.poolExists(pairAddress);
+      expect(poolExists).to.be.true;
+    });
+
+    it("Should return true for an existing pool with non-zero poolId", async () => {
+      const firstPairAddress = "0x3333333333333333333333333333333333333333";
+      const secondPairAddress = "0x4444444444444444444444444444444444444444";
+      const noAddress = "0x2222222222222222222222222222222222222222";
+      await masterChef.add(1000, firstPairAddress);
+      await masterChef.add(1000, secondPairAddress);
+
+      let poolExists = await masterChef.poolExists(secondPairAddress);
+      expect(poolExists).to.be.true;
+
+      poolExists = await masterChef.poolExists(noAddress);
+      expect(poolExists).to.be.false;
+    });
+
+    it("Should return false for a non-existent pool", async () => {
+      const pairAddress = "0x5555555555555555555555555555555555555555";
+      await masterChef.add(1000, pairAddress);
+      const nonExistentPairAddress = "0x6666666666666666666666666666666666666666";
+      const poolExists = await masterChef.poolExists(nonExistentPairAddress);
+      expect(poolExists).to.be.false;
+    });
   });
 });

@@ -103,3 +103,65 @@ It is assumed that no one will call it in a normal situation
 #### harvest
 	collection of rewards for the user
 
+
+
+### Key States, Attributes, and Block Data Analysis
+
+#### 1. deposit(_pairAddress, _amount, _referral)
+- Impact on contract state:
+  - Updates userInfo state (amount, withdrawnReward, depositTimestamp).
+  - Updates poolInfo state (totalDeposited).
+  - Sets or updates referral relationship between addresses.
+- Internal calls:
+  - _accountNewRewards()
+  - _updatePool(_pid)
+  - _rewardTransfer()
+- Token impact:
+  - Transfers LP tokens from msg.sender to the contract.
+  - Pays out NRFX token rewards to the user and referrer or feeTreasury.
+
+#### 2. withdraw(_pairAddress, _amount)
+- Impact on contract state:
+  - Updates userInfo state (amount, withdrawnReward).
+  - Updates poolInfo state (totalDeposited).
+- Internal calls:
+  - _accountNewRewards()
+  - _updatePool(_pid)
+  - _harvest(_pairAddress)
+- Token impact:
+  - Returns LP tokens to the user.
+  - Pays out NRFX token rewards to the user and referrer or feeTreasury.
+
+#### 3. harvest(_pairAddress)
+- Impact on contract state:
+  - Updates userInfo state (withdrawnReward, storedReward, harvestTimestamp).
+- Internal calls:
+  - _harvest(_pairAddress)
+- Token impact:
+  - Pays out NRFX token rewards to the user and referrer or feeTreasury.
+
+#### 4. setRewardPerBlock(_amount)
+- Impact on contract state:
+  - Updates rewardPerBlock and endBlock values.
+- Internal calls:
+  - _setRewardPerBlock(newRewardPerBlock)
+  - _accountNewRewards()
+  - _massUpdatePools()
+- Token impact: none.
+
+#### 5. massUpdatePools()
+- Impact on contract state:
+  - Updates the state of all pools.
+- Internal calls:
+  - _accountNewRewards()
+  - _massUpdatePools()
+- Token impact: none.
+
+#### 6. updatePool(_pid)
+- Impact on contract state:
+  - Updates the state of the pool with the given _pid.
+- Internal calls:
+  - _accountNewRewards()
+  - _updatePool(_pid)
+  - _rewardTransfer()
+- Token impact: none.

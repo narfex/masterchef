@@ -34,7 +34,6 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
     }
 
     struct PoolInfo {
-        bool exist;  // default storage slot value is false, set true on adding
         IERC20 pairToken; // Address of LP token contract
         uint256 allocPoint; // How many allocation points assigned to this pool
         uint256 lastRewardBlock;  // Last block number that NRFX distribution occurs.
@@ -262,6 +261,14 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
      * @param lastRewardTokenBalance The last value of the balance.
      */
     event LastRewardTokenBalanceDecreasedAfterTransfer(uint256 amount, uint256 lastRewardTokenBalance);
+
+    /**
+     * @notice Emitted when tokens or native currency are recovered by the owner
+     * @param token The token address that was recovered, or 0x0 for native currency
+     * @param to The address that received the recovered tokens or native currency
+     * @param amount The amount of tokens or native currency recovered
+     */
+    event Recovered(address indexed token, address indexed to, uint256 amount);
 
     /// @notice Constructor for the Narfex MasterChef contract
     /// @param _rewardToken The address of the ERC20 token used for rewards (NRFX)
@@ -505,10 +512,16 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
       * @return True if the pool exists, false otherwise
       */
     function poolExists(address _pairAddress) public view returns(bool) {
-        if (poolInfo.length == 0) {  // prevent out of bounds error
-            return false;
+        uint256 _poolId = poolId[_pairAddress];
+        if (_poolId == 0) {
+            if (poolInfo.length == 0) {
+                return false;
+            } else {
+                return address(poolInfo[0].pairToken) == _pairAddress;
+            }
+        } else {
+            return true;
         }
-        return poolInfo[poolId[_pairAddress]].exist;
     }
 
     /// @notice Add a new pool
@@ -525,7 +538,6 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
             allocPoint: _allocPoint,
             lastRewardBlock: lastRewardBlock,
             accRewardPerShare: 0,
-            exist: true,
             totalDeposited: 0
         }));
         poolId[_pairAddress] = poolInfo.length - 1;
@@ -886,15 +898,6 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
         _harvest(_pairAddress);
     }
 
-    /// @notice Recover any accidentally sent native currency
-    /// @param to Address to receive the native currency
-    /// @param amount Amount of native currency to recover
-    function recoverNative(address payable to, uint256 amount) external onlyOwner nonReentrant {
-        // Send the native currency to the specified address
-        (bool success,) = to.call{value: amount}("");
-        require(success, "Failed to send native currency");
-    }
-
     /// @notice Recover any token accidentally sent to the contract (does not allow recover deposited LP and reward tokens)
     /// @param token Token to recover
     /// @param to Where to send recovered tokens
@@ -909,6 +912,7 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
         } else {
             IERC20(token).safeTransfer(to, amount);
         }
+        emit Recovered(address(token), to, amount);
     }
 
     /// @notice Recover reward token in case of emergency
@@ -916,6 +920,7 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
     /// @param amount Amount to send
     function emergencyRecoverReward(address to, uint256 amount) external onlyOwner nonReentrant onlyEmergency {
         IERC20(rewardToken).safeTransfer(to, amount);
+        emit Recovered(address(rewardToken), to, amount);
     }
 
     /// @notice Transfer reward with all checks
