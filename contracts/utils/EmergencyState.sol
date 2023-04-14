@@ -45,7 +45,7 @@ abstract contract EmergencyState is Ownable {
      */
     EmergencyStateType public emergencyState;
 
-    event EmergencyState(EmergencyStateType emergencyState);
+    event EmergencyStateSet(EmergencyStateType emergencyState);
 
     modifier notEmergency() {
         require(emergencyState < EmergencyStateType.EMERGENCY_FOREVER, "EmergencyState: emergency state is active");
@@ -65,6 +65,6 @@ abstract contract EmergencyState is Ownable {
         require(emergencyState == EmergencyStateType.NORMAL, "EmergencyState: cannot change forever state");
         require(_emergencyState != EmergencyStateType.NORMAL, "EmergencyState: cannot set normal state");
         emergencyState = _emergencyState;
-        emit EmergencyState(_emergencyState);
+        emit EmergencyStateSet(_emergencyState);
     }
 }
