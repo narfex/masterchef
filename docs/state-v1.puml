@@ -1,0 +1,65 @@
+@startuml
+!define AWSPUML https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v15.0/dist
+!includeurl AWSPUML/AWSCommon.puml
+
+actor User
+participant Deposit
+participant Withdraw
+participant Harvest
+database UserInfo
+database EndBlock
+participant AccountNewRewards
+participant RewardTransfer
+participant UpdateRewardPerBlock
+database TotalStaked
+database AccRewardPerShare
+database LastRewardBlock
+
+User -> Deposit: deposit()
+note right: user deposits stakingToken
+Deposit -> UserInfo: update userInfo
+note right: update user's staking balance
+Deposit -> AccountNewRewards: _accountNewRewards()
+note right: calculate and update rewards
+Deposit -> RewardTransfer: _rewardTransfer()
+note right: transfer rewards to user
+
+User -> Withdraw: withdraw()
+note right: user withdraws stakingToken
+Withdraw -> UserInfo: update userInfo
+note right: update user's staking balance
+Withdraw -> AccountNewRewards: _accountNewRewards()
+note right: calculate and update rewards
+Withdraw -> RewardTransfer: _rewardTransfer()
+note right: transfer rewards to user
+
+User -> Harvest: harvest()
+note right: user claims rewards
+Harvest -> UserInfo: update userInfo
+note right: update user's reward balance
+Harvest -> AccountNewRewards: _accountNewRewards()
+note right: calculate and update rewards
+Harvest -> RewardTransfer: _rewardTransfer()
+note right: transfer rewards to user
+
+User -> UpdateRewardPerBlock: updateRewardPerBlock()
+note right: update reward per block
+UpdateRewardPerBlock -> AccountNewRewards: _accountNewRewards()
+note right: calculate and update rewards
+UpdateRewardPerBlock -> LastRewardBlock: update lastRewardBlock
+note right: update last reward block
+
+AccountNewRewards -> EndBlock: update endBlock
+note right: update end block based on rewards available
+AccountNewRewards -> AccRewardPerShare: update accRewardPerShare
+note right: update accumulated reward per share
+AccountNewRewards -> LastRewardBlock: update lastRewardBlock
+note right: update last reward block
+AccountNewRewards -> TotalStaked: update totalStaked
+note right: update total staked amount
+RewardTransfer -> UserInfo: update userInfo
+note right: update user's reward balance
+RewardTransfer -> TotalStaked: update totalStaked
+note right: update total staked amount
+
+@enduml

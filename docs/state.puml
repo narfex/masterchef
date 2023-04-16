@@ -1,0 +1,53 @@
+@startuml
+!define AWSPUML https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v15.0/dist
+!includeurl AWSPUML/AWSCommon.puml
+
+actor User
+participant Deposit
+participant Withdraw
+participant Harvest
+database UserInfo
+database EndBlock
+participant AccountNewRewards
+participant RewardTransfer
+participant UpdateRewardPerBlock
+database TotalStaked
+database AccRewardPerShare
+database LastRewardBlock
+
+User -> Deposit: deposit()
+Deposit -> UserInfo: update userInfo
+Deposit -> AccountNewRewards: _accountNewRewards()
+note right: only if endBlock > block.number
+Deposit -> RewardTransfer: _rewardTransfer()
+note right: only if pending rewards > 0
+
+User -> Withdraw: withdraw()
+Withdraw -> UserInfo: update userInfo
+Withdraw -> AccountNewRewards: _accountNewRewards()
+note right: only if endBlock > block.number
+Withdraw -> RewardTransfer: _rewardTransfer()
+note right: only if pending rewards > 0
+
+User -> Harvest: harvest()
+Harvest -> UserInfo: update userInfo
+Harvest -> AccountNewRewards: _accountNewRewards()
+note right: only if endBlock > block.number
+Harvest -> RewardTransfer: _rewardTransfer()
+note right: only if pending rewards > 0
+
+User -> UpdateRewardPerBlock: updateRewardPerBlock()
+note right: update only if _rewardPerBlock > 0
+UpdateRewardPerBlock -> AccountNewRewards: _accountNewRewards()
+note right: only if endBlock > block.number
+UpdateRewardPerBlock -> LastRewardBlock: update lastRewardBlock
+
+AccountNewRewards -> EndBlock: update endBlock
+note right: if rewardToken balance is enough
+AccountNewRewards -> AccRewardPerShare: update accRewardPerShare
+AccountNewRewards -> LastRewardBlock: update lastRewardBlock
+AccountNewRewards -> TotalStaked: update totalStaked
+RewardTransfer -> UserInfo: update userInfo
+RewardTransfer -> TotalStaked: update totalStaked
+
+@enduml
