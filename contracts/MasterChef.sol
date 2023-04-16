@@ -39,6 +39,8 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
         uint256 lastRewardBlock;  // Last block number that NRFX distribution occurs.
         uint256 accRewardPerShare; // Accumulated NRFX per share, times ACC_REWARD_PRECISION=1e12
         uint256 totalDeposited; // Total amount of LP-tokens deposited
+        uint256 earlyHarvestCommissionInterval; // The interval from the deposit in which the commission for the reward will be taken.
+        uint256 earlyHarvestCommission; // Commission for to early harvests with 2 digits of precision (10000 = 100%)
     }
 
     uint256 constant internal ACC_REWARD_PRECISION = 1e12;
@@ -234,6 +236,16 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
     /// @notice Event emitted when the early harvest commission is updated
     /// @param percents The new early harvest commission value
     event EarlyHarvestCommissionSet(uint256 percents);
+
+    /// @notice Event emitted when the early harvest commission interval is updated for a pool
+    /// @param interval The new early harvest commission interval value
+    /// @param pid Pool ID
+    event PoolEarlyHarvestCommissionIntervalSet(uint256 interval, uint256 pid);
+
+    /// @notice Event emitted when the early harvest commission is updated for a pool
+    /// @param percents The new early harvest commission value
+    /// @param pid Pool ID
+    event PoolEarlyHarvestCommissionSet(uint256 percents, uint256 pid);
 
     /// @notice Event emitted when the harvest interval is updated
     /// @param interval The new harvest interval value
@@ -538,7 +550,9 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
             allocPoint: _allocPoint,
             lastRewardBlock: lastRewardBlock,
             accRewardPerShare: 0,
-            totalDeposited: 0
+            totalDeposited: 0,
+            earlyHarvestCommissionInterval: earlyHarvestCommissionInterval,
+            earlyHarvestCommission: earlyHarvestCommission
         }));
         poolId[_pairAddress] = poolInfo.length - 1;
         emit PoolAdded({
@@ -725,6 +739,14 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
         emit EarlyHarvestCommissionIntervalSet(interval);
     }
 
+    /// @notice Sets the early harvest commission interval for a pool
+    /// @param interval Interval size in seconds
+    /// @param _pid Pool ID
+    function setEarlyHarvestCommissionInterval(uint interval, uint _pid) external onlyOwner nonReentrant {
+        poolInfo[_pid].earlyHarvestCommissionInterval = interval;
+        emit PoolEarlyHarvestCommissionIntervalSet(interval, _pid);
+    }
+
     /// @notice Sets the harvest interval
     /// @param interval Interval size in seconds
     function setHarvestInterval(uint interval) external onlyOwner nonReentrant {
@@ -737,6 +759,14 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
     function setEarlyHarvestCommission(uint percents) external onlyOwner nonReentrant {
         earlyHarvestCommission = percents;
         emit EarlyHarvestCommissionSet(percents);
+    }
+
+    /// @notice Sets the early harvest commission for a pool
+    /// @param percents Early harvest commission in percents denominated by 10000 (1000 for default 10%)
+    /// @param _pid Pool ID
+    function setEarlyHarvestCommission(uint percents, uint _pid) external onlyOwner nonReentrant {
+        poolInfo[_pid].earlyHarvestCommission = percents;
+        emit PoolEarlyHarvestCommissionSet(percents, _pid);
     }
 
     /**
@@ -934,7 +964,8 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
         bool isWithdraw,
         uint256 _pid
     ) internal {
-        bool isEarlyHarvestCommission = block.timestamp - user.depositTimestamp < earlyHarvestCommissionInterval;
+        PoolInfo storage pool = poolInfo[_pid];
+        bool isEarlyHarvestCommission = block.timestamp - user.depositTimestamp < pool.earlyHarvestCommissionInterval;
         bool isEarlyHarvest = block.timestamp - user.harvestTimestamp < harvestInterval;
         
         if (isEarlyHarvest) {
@@ -944,7 +975,7 @@ contract MasterChef is Ownable, ReentrancyGuard, Pausable, EmergencyState {
 
         uint amountToUser = _amount;
         if (isWithdraw && isEarlyHarvestCommission) {
-            uint256 fee = earlyHarvestCommission / HUNDRED_PERCENTS;
+            uint256 fee = pool.earlyHarvestCommission / HUNDRED_PERCENTS;
             amountToUser = _amount - fee;
             _transferNRFX(feeTreasury, fee);
             emit EarlyHarvestCommissionPaid(feeTreasury, fee);
