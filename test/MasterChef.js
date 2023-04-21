@@ -94,6 +94,36 @@ describe("MasterChef", function () {
     endBlock = bn((await masterChef.endBlock()).toString());
   });
 
+  async function setEarlyHarvestCommission(signer, commission, pid) {
+    const contractInterface = masterChef.interface;
+    const functionData = contractInterface.encodeFunctionData(
+      "setEarlyHarvestCommission(uint256,uint256)",
+      [commission, pid]
+    );
+    const transaction = {
+      to: masterChef.address,
+      data: functionData,
+    };
+    const tx = await signer.sendTransaction(transaction);
+    await tx.wait();
+    return tx;
+  }
+
+  async function setEarlyHarvestCommissionInterval(signer, commissionInterval, pid) {
+    const contractInterface = masterChef.interface;
+    const functionData = contractInterface.encodeFunctionData(
+      "setEarlyHarvestCommissionInterval(uint256,uint256)",
+      [commissionInterval, pid]
+    );
+    const transaction = {
+      to: masterChef.address,
+      data: functionData,
+    };
+    const tx = await signer.sendTransaction(transaction);
+    await tx.wait();
+    return tx;
+  }
+
   describe("Pausable", () => {
     it("should only allow owner to call pause", async () => {
       await expect(masterChef.connect(otherAccount).pause()).to.be.revertedWith("Ownable: caller is not the owner");
@@ -109,6 +139,8 @@ describe("MasterChef", function () {
     it("should not allow deposit, withdraw and harvest when paused", async () => {
       await masterChef.connect(owner).pause();
       await masterChef.add(1000, lptoken.address);
+      await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+      await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
 
       await expect(masterChef.connect(alice).depositWithoutRefer(lptoken.address, ONE)).to.be.revertedWith("Pausable: paused");
       await expect(masterChef.connect(alice).withdraw(lptoken.address, ONE)).to.be.revertedWith("Pausable: paused");
@@ -281,23 +313,25 @@ describe("MasterChef", function () {
 
 
   it("Should set early harvest comission interval", async function () {
-    await masterChef.setEarlyHarvestCommissionInterval(50);
-
-    expect(await masterChef.earlyHarvestCommissionInterval()).to.equal(50);
+    await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommissionInterval(owner, 3600, 0);
+    await expect((await masterChef.poolInfo(0))[5]).to.equal(3600);
   });
 
   it("Should cancel early harvest comission interval from other account", async function () {
-    await expect (masterChef.connect(otherAccount).setEarlyHarvestCommissionInterval(50)).to.be.reverted;
+    await masterChef.add(1000, lptoken.address);
+    await expect (setEarlyHarvestCommissionInterval(otherAccount, 3600, 0)).to.be.reverted;
   });
 
   it("Should set early harvest commission", async function () {
-    await masterChef.setEarlyHarvestCommission(10);
-
-    expect(await masterChef.earlyHarvestCommission()).to.equal(10);
+    await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 50, 0);
+    await expect((await masterChef.poolInfo(0))[6]).to.equal(50);
   });
 
   it("Should cancel early harvest commission from other account", async function () {
-    await expect (masterChef.connect(otherAccount).setEarlyHarvestCommission(50)).to.be.reverted;
+    await masterChef.add(1000, lptoken.address);
+    await expect (setEarlyHarvestCommission(otherAccount, 50, 0)).to.be.reverted;
   });
 
   it("Should mass update pools after endBlock", async function () {
@@ -307,11 +341,15 @@ describe("MasterChef", function () {
 
   it("Should mass update pools", async function () {
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.massUpdatePools();
   });
 
   it("Should return pools count", async function () {
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
 
     await masterChef.getPoolsCount();
     expect(await masterChef.getPoolsCount()).to.equal(1);
@@ -333,6 +371,8 @@ describe("MasterChef", function () {
 
   it("Should not add same pool twice", async function () {
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await expect(masterChef.add(1000, lptoken.address)).to.be.revertedWith('already exists');
   });
 
@@ -342,11 +382,6 @@ describe("MasterChef", function () {
   });
 
   it("Should add a new pool", async function () {
-    await lptoken.mint(owner.address,100000);
-    await masterChef.add(1000, lptoken.address);
-  });
-
-  it("Should add a new pool without update", async function () {
     await lptoken.mint(owner.address,100000);
     await masterChef.add(1000, lptoken.address);
   });
@@ -362,6 +397,8 @@ describe("MasterChef", function () {
 
   it("Should return settings", async function () {
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.setRewardPerBlock(100);
     expect(await masterChef.rewardPerBlock()).to.equal(100);
 
@@ -394,6 +431,8 @@ describe("MasterChef", function () {
     await lptoken.approve(masterChef.address, 90);
     await lptoken.mint(owner.address, 100);
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.depositWithoutRefer(lptoken.address, 10);
     await mine(100);
     await masterChef.getUserReward(lptoken.address, owner.address);
@@ -406,6 +445,8 @@ describe("MasterChef", function () {
     await lptoken.approve(masterChef.address, 90);
     await lptoken.mint(owner.address, 100);
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.depositWithoutRefer(lptoken.address, 10);
     await mine(100);
     await masterChef.getUserReward(lptoken.address, owner.address);
@@ -417,17 +458,23 @@ describe("MasterChef", function () {
 
   it("Should return user pool size", async function () {
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await lptoken.mint(owner.address, 10000);
     await masterChef.getUserPoolSize(lptoken.address, owner.address);
   });
 
   it("Should return pool user data", async function () {
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.getPoolUserData(lptoken.address, owner.address);
   });
 
   it("Should update pool", async function () {
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.updatePool(0);
   });
 
@@ -437,6 +484,8 @@ describe("MasterChef", function () {
     await lptoken.mint(owner.address, 100);
     await lptoken.mint(otherAccount.address, 100);
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.depositWithoutRefer(lptoken.address, 100);
     await masterChef.updatePool(0);
   });
@@ -447,11 +496,15 @@ describe("MasterChef", function () {
     await lptoken.mint(owner.address, 100);
     await lptoken.mint(otherAccount.address, 100);
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.depositWithoutRefer(lptoken.address, 10);
   });
 
   it("Should send harvest", async function () {
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.harvest(lptoken.address);
   });
 
@@ -461,6 +514,8 @@ describe("MasterChef", function () {
     await lptoken.mint(owner.address, 100);
     await lptoken.mint(otherAccount.address, 100);
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.deposit(lptoken.address, 10, otherAccount.address);
   });
 
@@ -469,6 +524,8 @@ describe("MasterChef", function () {
     await lptoken.approve(masterChef.address, 90);
     await lptoken.mint(otherAccount.address, 100);
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await expect (masterChef.deposit(lptoken.address, 10, otherAccount.address)).to.be.reverted;
   });
 
@@ -478,11 +535,15 @@ describe("MasterChef", function () {
     await lptoken.mint(owner.address, 100);
     await lptoken.mint(otherAccount.address, 100);
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.deposit(lptoken.address, 0, otherAccount.address);
   });
 
   it("Should withdraw", async function () {
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.withdraw(lptoken.address, 0);
   });
 
@@ -492,17 +553,23 @@ describe("MasterChef", function () {
     await lptoken.mint(owner.address, 100);
     await lptoken.mint(otherAccount.address, 100);
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.deposit(lptoken.address, 50, otherAccount.address);
     await masterChef.withdraw(lptoken.address, 50);
   });
 
   it("Should revert too big amount", async function () {
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await expect(masterChef.withdraw(lptoken.address, 1000)).to.be.revertedWith("Too big amount");
   });
 
   it("Should emergency withdraw", async function () {
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await masterChef.justWithdrawWithNoReward(lptoken.address);
   });
 
@@ -519,6 +586,8 @@ describe("MasterChef", function () {
     await lptoken.connect(carol).approve(masterChef.address, 30_000);
 
     await masterChef.add(1000, lptoken.address);
+    // await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    // await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
 
     await masterChef.connect(alice).depositWithoutRefer(lptoken.address, 10_000);
     await expect( await masterChef.getUserReward(lptoken.address, alice.address)).to.be.equal(0);
@@ -675,6 +744,8 @@ describe("MasterChef", function () {
 
   it("Referral reward transferred", async function () {
     await masterChef.add(1000, lptoken.address);
+    // await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    // await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
 
     await lptoken.mint(bob.address, 20_000);
     await lptoken.connect(bob).approve(masterChef.address, 20_000);
@@ -707,6 +778,8 @@ describe("MasterChef", function () {
     await lptoken.connect(alice).approve(masterChef.address, 10_000);
     await lptoken.connect(bob).approve(masterChef.address, 20_000);
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
 
     await masterChef.connect(alice).depositWithoutRefer(lptoken.address, 10_000);
 
@@ -734,6 +807,8 @@ describe("MasterChef", function () {
     await lptoken.mint(alice.address, 5_000);
     await lptoken.connect(alice).approve(masterChef.address, 5_000);
     await masterChef.add(1000, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
 
     await masterChef.connect(alice).depositWithoutRefer(lptoken.address, 2_000);
 
@@ -760,6 +835,8 @@ describe("MasterChef", function () {
 
     // Recover token when it's a pool token, but not reward token
     await masterChef.add(1000, erc20Token.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
     await erc20Token.mint(masterChef.address, tokenAmount);
 
     await expect(masterChef.connect(owner).recoverERC20(erc20Token.address, other.address, tokenAmount))
@@ -790,6 +867,8 @@ describe("MasterChef", function () {
   it("should return pool data for a given pool address", async () => {
     const allocPoint = 1000;
     await masterChef.add(allocPoint, lptoken.address);
+    await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+    await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
 
     const depositAmount = ethers.utils.parseUnits("10", 18);
     await lptoken.mint(alice.address, depositAmount);
@@ -824,6 +903,8 @@ describe("MasterChef", function () {
     it("Should return true for an existing pool with poolId 0", async () => {
       const pairAddress = "0x2222222222222222222222222222222222222222";
       await masterChef.add(1000, pairAddress);
+      await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+      await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
 
       const poolExists = await masterChef.poolExists(pairAddress);
       expect(poolExists).to.be.true;
@@ -834,7 +915,11 @@ describe("MasterChef", function () {
       const secondPairAddress = "0x4444444444444444444444444444444444444444";
       const noAddress = "0x2222222222222222222222222222222222222222";
       await masterChef.add(1000, firstPairAddress);
+      await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+      await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
       await masterChef.add(1000, secondPairAddress);
+      await setEarlyHarvestCommission(owner, 1000, 1);  // 10;
+      await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 1);  // 14 days
 
       let poolExists = await masterChef.poolExists(secondPairAddress);
       expect(poolExists).to.be.true;
@@ -846,6 +931,8 @@ describe("MasterChef", function () {
     it("Should return false for a non-existent pool", async () => {
       const pairAddress = "0x5555555555555555555555555555555555555555";
       await masterChef.add(1000, pairAddress);
+      await setEarlyHarvestCommission(owner, 1000, 0);  // 10;
+      await setEarlyHarvestCommission(owner, 14 * 24 * 3600, 0);  // 14 days
       const nonExistentPairAddress = "0x6666666666666666666666666666666666666666";
       const poolExists = await masterChef.poolExists(nonExistentPairAddress);
       expect(poolExists).to.be.false;
